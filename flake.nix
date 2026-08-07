@@ -15,6 +15,10 @@
           rustfmt
           clippy
           nodejs
+          yt-dlp
+          pkg-config
+          openssl
+          sea-orm-cli
         ];
       };
     }
