@@ -13,7 +13,7 @@ static BASE_URL: &'static str = "https://musicbrainz.org/ws/2";
 
 #[derive(thiserror::Error, Debug)]
 pub enum RequestError {
-    #[error("Error sending or receiving request")]
+    #[error("Error sending or receiving request: {0}")]
     Reqwest(#[from] reqwest::Error),
 
     #[error("Musicbrainz API returned an error: {0} {1}")]

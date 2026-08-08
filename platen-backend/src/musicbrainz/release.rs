@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 use crate::musicbrainz::Musicbrainz;
@@ -63,7 +63,7 @@ pub struct Artist {
     pub aliases: Option<Vec<Alias>>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct Alias {
     pub name: Option<String>,
@@ -118,7 +118,7 @@ pub struct ReleaseEvent {
     pub area: Option<Area>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Area {
     pub id: String,
