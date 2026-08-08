@@ -18,7 +18,7 @@ impl Musicbrainz {
 
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Release {
     pub id: String,
     pub title: String,
@@ -42,7 +42,7 @@ pub struct Release {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ArtistCredit {
     pub joinphrase: Option<String>,
     pub name: String,
@@ -50,13 +50,13 @@ pub struct ArtistCredit {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Artist {
     pub id: String,
     pub name: String,
     pub sort_name: Option<String>,
     pub country: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename(deserialize = "type"))]
     pub artist_type: Option<String>,
     pub type_id: Option<String>,
     pub disambiguation: Option<String>,
@@ -64,12 +64,12 @@ pub struct Artist {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Alias {
     pub name: Option<String>,
     pub sort_name: Option<String>,
     pub locale: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename(deserialize = "type"))]
     pub alias_type: Option<String>,
     pub type_id: Option<String>,
     pub primary: Option<bool>,
@@ -79,14 +79,14 @@ pub struct Alias {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct TextRepresentation {
     pub script: Option<String>,
     pub language: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct CoverArtArchive {
     pub artwork: bool,
     pub count: u32,
@@ -96,14 +96,14 @@ pub struct CoverArtArchive {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct LabelInfo {
     pub catalog_number: Option<String>,
     pub label: Option<Label>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Label {
     pub id: Option<String>,
     pub name: Option<String>,
@@ -112,27 +112,27 @@ pub struct Label {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ReleaseEvent {
     pub date: Option<String>,
     pub area: Option<Area>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Area {
     pub id: String,
     pub name: String,
     pub sort_name: Option<String>,
     pub disambiguation: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename(deserialize = "type"))]
     pub area_type: Option<String>,
     pub type_id: Option<String>,
     pub iso_3166_1_codes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Media {
     pub id: Option<String>,
     pub position: u32,
@@ -146,7 +146,7 @@ pub struct Media {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Disc {
     pub id: Option<String>,
     pub offset_count: Option<u32>,
@@ -155,7 +155,7 @@ pub struct Disc {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Track {
     pub id: String,
     pub number: String,
@@ -167,7 +167,7 @@ pub struct Track {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Recording {
     pub id: String,
     pub title: Option<String>,

@@ -1,6 +1,7 @@
 use std::{error::Error, path::Path, time::Duration};
 
-use tokio::{sync::mpsc, task, time::sleep};
+use tokio::{sync::{Barrier, mpsc}, task, time::sleep};
+use tracing::info;
 
 use crate::musicbrainz::release::Release;
 
@@ -20,13 +21,13 @@ pub struct RateLimit {
 
 impl RateLimit {
     pub fn new(cooldown_ms: u64) -> RateLimit {
+        info!("Rate limit created");
         let (sender, mut receiver) = mpsc::channel::<()>(1);
-
         task::spawn(async move {
             loop {
                 sleep(Duration::from_millis(cooldown_ms)).await;
                 receiver.recv().await;
-                tracing::debug!("msg received");
+                tracing::info!("msg received");
             }
         });
 

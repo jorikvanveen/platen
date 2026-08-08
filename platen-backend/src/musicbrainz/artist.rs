@@ -27,27 +27,28 @@ impl Musicbrainz {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ArtistSearchResponse {
     artists: Vec<ArtistSearchResult>
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ArtistSearchResult {
     pub id: String,
     pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Artist {
     pub id: String,
     pub name: String,
     pub sort_name: Option<String>,
     pub disambiguation: Option<String>,
     pub country: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename(deserialize = "type"))]
     pub artist_type: Option<String>,
     pub type_id: Option<String>,
     pub gender: Option<String>,
@@ -63,7 +64,7 @@ pub struct Artist {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct LifeSpan {
     pub begin: Option<String>,
     pub end: Option<String>,
@@ -71,7 +72,7 @@ pub struct LifeSpan {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all(deserialize = "kebab-case"))]
 pub struct Release {
     id: String,
     title: String,

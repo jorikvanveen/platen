@@ -18,7 +18,7 @@ pub async fn get_artist(
             StatusCode::INTERNAL_SERVER_ERROR
         }
     })?;
-    
+    info!("Returned artist");
     Ok(Json(artist))
 }
 
@@ -27,9 +27,11 @@ pub async fn search_artist(
     Path(query): Path<String>
 ) -> Result<Json<Vec<ArtistSearchResult>>, StatusCode> {
     info!("Searching for artist: {query}");
+    
     let result = musicbrainz.search_artist(&query).await.map_err(|e| {
         error!("{e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+    
     Ok(Json(result))
 }
