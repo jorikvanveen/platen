@@ -1,6 +1,6 @@
-use std::{error::Error, path::Path, time::Duration};
+use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
-use tokio::{sync::{Barrier, mpsc}, task, time::sleep};
+use tokio::{sync::{Barrier, Semaphore, mpsc}, task, time::sleep};
 use tracing::info;
 
 use crate::musicbrainz::release::Release;
@@ -16,28 +16,24 @@ pub trait Downloader {
 
 #[derive(Clone, Debug)]
 pub struct RateLimit {
-    sender: mpsc::Sender<()>,
+    semaphore: Arc<Semaphore>,
+    cooldown_ms: u64
 }
 
 impl RateLimit {
     pub fn new(cooldown_ms: u64) -> RateLimit {
-        info!("Rate limit created");
-        let (sender, mut receiver) = mpsc::channel::<()>(1);
-        task::spawn(async move {
-            loop {
-                sleep(Duration::from_millis(cooldown_ms)).await;
-                receiver.recv().await;
-                tracing::info!("msg received");
-            }
-        });
-
-        RateLimit { sender }
+        let semaphore = Arc::new(Semaphore::new(1));
+        RateLimit { semaphore, cooldown_ms }
     }
 
     pub async fn wait(&self) {
-        tracing::debug!("msg sent");
-        self.sender.send(()).await.unwrap();
-        tracing::debug!("msg acknowledged");
+        let permit = Arc::clone(&self.semaphore).acquire_owned().await.unwrap();
+        let duration = Duration::from_millis(self.cooldown_ms);
+        task::spawn(async move {
+            // Make sure that next acquisition goes through at least `cooldown_ms` later
+            sleep(duration).await;
+            drop(permit);
+        });
     }
 }
 
