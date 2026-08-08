@@ -1,14 +1,9 @@
-use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
-
-use axum::{Router, extract::FromRef, routing::{get, post}};
+use axum::{Router, routing::{get, post}};
 use migration::{Migrator, MigratorTrait};
-use reqwest::ClientBuilder;
-use rustypipe::{client::RustyPipe, model::{MusicItem, MusicSearchResult, SearchResult, TrackItem}};
 use sea_orm::{Database, DatabaseConnection};
-use tokio::{net::TcpListener, task, time::sleep};
-use tracing::{Level, instrument};
+use tokio::net::TcpListener;
 
-use crate::{downloaders::{Downloader, RateLimit, youtube::Youtube}, musicbrainz::Musicbrainz};
+use crate::musicbrainz::Musicbrainz;
 
 mod downloaders;
 mod musicbrainz;

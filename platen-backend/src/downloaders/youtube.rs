@@ -1,20 +1,16 @@
 use rustypipe::client::RustyPipe;
-use rustypipe::model::MusicItem;
-use rustypipe::model::MusicSearchResult;
 use tokio::fs;
 use tokio::io;
 use tokio::process::Command;
 use tokio::time::sleep;
 use std::path::Path;
-use std::path::PathBuf;
-use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
 use tracing::info;
 
 use crate::downloaders::Downloader;
 use crate::downloaders::RateLimit;
-use crate::musicbrainz::release::{Release, Track};
+use crate::musicbrainz::release::Release;
 
 pub struct Youtube {
     rate_limit: RateLimit,

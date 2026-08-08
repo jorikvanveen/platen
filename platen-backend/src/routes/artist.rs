@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use axum::extract::*;
 use reqwest::StatusCode;
-use sea_orm::{ActiveModelBehavior, ActiveModelTrait, ActiveValue, DatabaseConnection, EntityTrait, TryIntoModel};
-use tracing::{error, info, instrument};
+use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait};
+use tracing::{error, info};
 
 use crate::{AppState, entity::artist, musicbrainz::RequestError};
 

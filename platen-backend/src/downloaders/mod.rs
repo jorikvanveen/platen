@@ -1,12 +1,8 @@
-use std::{error::Error, path::Path, sync::Arc, time::Duration};
+use std::{error::Error, path::Path, time::Duration};
 
-use tokio::{
-    sync::mpsc,
-    task::{self, JoinHandle},
-    time::sleep,
-};
+use tokio::{sync::mpsc, task, time::sleep};
 
-use crate::musicbrainz::release::{Release, Track};
+use crate::musicbrainz::release::Release;
 
 pub trait Downloader {
     type Error: Error;

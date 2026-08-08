@@ -1,9 +1,9 @@
 use axum::{Json, extract::{Path, State}};
 use reqwest::StatusCode;
-use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, ModelTrait, Related, Select};
+use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, ModelTrait};
 use tracing::{error, info};
 
-use crate::{AppState, entity, musicbrainz::release::Release};
+use crate::{AppState, entity};
 
 pub async fn create(
     State(AppState { musicbrainz, db, .. }): State<AppState>,

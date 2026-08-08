@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use tracing::{debug, instrument};
-use reqwest::{Client, ClientBuilder, StatusCode};
-use serde::Deserialize;
+use reqwest::{ClientBuilder, StatusCode};
 
 use crate::downloaders::RateLimit;
 
