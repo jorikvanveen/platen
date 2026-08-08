@@ -28,6 +28,8 @@ async fn main() -> color_eyre::Result<()> {
     let app = Router::new()
         .route("/artist/{id}", get(routes::artist::get))
         .route("/artist/{id}", post(routes::artist::create))
+        .route("/artist/{artist_id}/release/{release_id}", post(routes::release::create))
+        .route("/artist/{artist_id}/releases", get(routes::release::fetch_all))
         .route("/", get(|| async { "Hello world" }))
         .with_state(state);
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
