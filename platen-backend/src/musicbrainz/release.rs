@@ -7,6 +7,7 @@ use super::{BASE_URL, RequestError};
 impl Musicbrainz {
     #[instrument]
     pub async fn get_release(&self, release_id: &str) -> Result<Release, RequestError> {
+        tracing::info!("Getting release: {release_id}");
         let url = format!("{BASE_URL}/release/{release_id}?inc=aliases%2Bartist-credits%2Blabels%2Bdiscids%2Brecordings&fmt=json");
         let resp = self.fetch_with_retry(&url).await?;
         if !resp.status().is_success() {
@@ -36,7 +37,7 @@ pub struct Release {
     pub cover_art_archive: Option<CoverArtArchive>,
     pub artist_credit: Vec<ArtistCredit>,
     pub label_info: Vec<LabelInfo>,
-    pub release_events: Vec<ReleaseEvent>,
+    pub release_events: Option<Vec<ReleaseEvent>>,
     pub aliases: Option<Vec<Alias>>,
     pub media: Vec<Media>,
 }

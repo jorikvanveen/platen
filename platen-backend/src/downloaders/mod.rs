@@ -1,9 +1,11 @@
 use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
-use tokio::{sync::{Barrier, Semaphore, mpsc}, task, time::sleep};
-use tracing::info;
+use tokio::{sync::Semaphore, task, time::sleep};
 
 use crate::musicbrainz::release::Release;
+
+pub mod youtube;
+pub mod antra;
 
 pub trait Downloader {
     type Error: Error;
@@ -30,11 +32,9 @@ impl RateLimit {
         let permit = Arc::clone(&self.semaphore).acquire_owned().await.unwrap();
         let duration = Duration::from_millis(self.cooldown_ms);
         task::spawn(async move {
-            // Make sure that next acquisition goes through at least `cooldown_ms` later
+            // Make sure that the next acquisition goes through at least `cooldown_ms` later
             sleep(duration).await;
             drop(permit);
         });
     }
 }
-
-pub mod youtube;

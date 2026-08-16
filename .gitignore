@@ -1,4 +1,7 @@
+.env
+.env.nu
 .direnv
+search_result.json
 platen-backend/db.sqlite
 platen-backend/out.webm
 platen-backend/rustypipe_cache.json
