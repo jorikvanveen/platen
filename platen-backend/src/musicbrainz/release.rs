@@ -15,8 +15,27 @@ impl Musicbrainz {
         }
         Ok(resp.json().await?)
     }
+    
+    #[instrument]
+    pub async fn get_release_group(&self, release_id: &str) -> Result<ReleaseGroup, RequestError> {
+        tracing::info!("Getting release: {release_id}");
+        let url = format!("{BASE_URL}/release-group/{release_id}?&fmt=json");
+        let resp = self.fetch_with_retry(&url).await?;
+        if !resp.status().is_success() {
+            return Err(RequestError::MusicbrainzError(resp.status(), resp.text().await?))
+        }
+        Ok(resp.json().await?)
+    }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all(deserialize = "kebab-case"))]
+pub struct ReleaseGroup {
+    pub id: String,
+    pub primary_type: String,
+    pub title: String,
+    pub first_release_date: Option<String>
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
@@ -33,7 +52,7 @@ pub struct Release {
     pub disambiguation: Option<String>,
     pub packaging: Option<String>,
     pub packaging_id: Option<String>,
-    pub text_representation: Option<TextRepresentation>,
+    //pub text_representation: Option<TextRepresentation>,
     pub cover_art_archive: Option<CoverArtArchive>,
     pub artist_credit: Vec<ArtistCredit>,
     pub label_info: Vec<LabelInfo>,
@@ -57,8 +76,7 @@ pub struct Artist {
     pub name: String,
     pub sort_name: Option<String>,
     pub country: Option<String>,
-    #[serde(rename(deserialize = "type"))]
-    pub artist_type: Option<String>,
+    pub r#type: Option<String>,
     pub type_id: Option<String>,
     pub disambiguation: Option<String>,
     pub aliases: Option<Vec<Alias>>,
@@ -129,7 +147,6 @@ pub struct Area {
     #[serde(rename(deserialize = "type"))]
     pub area_type: Option<String>,
     pub type_id: Option<String>,
-    pub iso_3166_1_codes: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]

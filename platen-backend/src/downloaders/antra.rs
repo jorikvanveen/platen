@@ -266,12 +266,12 @@ impl Downloader for Antra {
 
     async fn download_release(
         &self,
-        release: &crate::musicbrainz::release::Release,
+        artist: &str,
+        release_title: &str,
         destination: &std::path::Path,
     ) -> Result<(), Self::Error> {
-        tracing::info!("Downloading release: {} ({})", release.title, release.id);
-        let artist = release.artist_credit.first().unwrap().artist.name.clone();
-        let release_query = format!("{artist} {}", release.title);
+        tracing::info!("Downloading release: {}", &release_title);
+        let release_query = format!("{artist} {}", release_title);
         let albums = { self.tidal.lock().await.find_album(&release_query).await? };
 
         let album = albums.first().ok_or(AntraError::NotFound)?;

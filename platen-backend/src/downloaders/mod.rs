@@ -2,7 +2,7 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 use tokio::{sync::Semaphore, task, time::sleep};
 
-use crate::musicbrainz::release::Release;
+use crate::musicbrainz::release::{Release, ReleaseGroup};
 
 pub mod youtube;
 pub mod antra;
@@ -11,7 +11,8 @@ pub trait Downloader {
     type Error: Error;
     async fn download_release(
         &self,
-        release: &Release,
+        artist: &str,
+        release_group: &str,
         destination: &Path,
     ) -> Result<(), Self::Error>;
 }

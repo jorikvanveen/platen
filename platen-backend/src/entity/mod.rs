@@ -3,4 +3,4 @@
 pub mod prelude;
 
 pub mod artist;
-pub mod release;
+pub mod release_group;

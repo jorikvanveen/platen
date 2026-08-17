@@ -53,3 +53,14 @@ pub async fn create(
     
     Ok(Json(result_model))
 }
+
+pub async fn list(
+    State(AppState { db, .. }): State<AppState>
+) -> Result<Json<Vec<artist::Model>>, StatusCode> {
+    info!("Listing artists");
+    let artists = artist::Entity::find().all(&db).await.map_err(|e| {
+        error!("{}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    Ok(Json(artists))
+}

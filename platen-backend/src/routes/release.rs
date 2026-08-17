@@ -1,43 +1,50 @@
-use axum::{Json, extract::{Path, State}};
-use reqwest::StatusCode;
-use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait, ModelTrait};
-use tracing::{error, info};
+use std::path::PathBuf;
 
-use crate::{AppState, entity};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
+use reqwest::StatusCode;
+use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, IntoActiveModel, ModelTrait, QueryFilter};
+use sea_schema::sea_query::Expr;
+use tracing::{dispatcher::with_default, error, info};
+
+use crate::{AppState, downloaders::Downloader, entity};
 
 pub async fn create(
-    State(AppState { musicbrainz, db, .. }): State<AppState>,
-    Path((artist_id, release_id)): Path<(String, String)>,
-) -> Result<Json<entity::release::Model>, StatusCode> {
-    info!("Creating release {release_id} on artist {artist_id}");
-    let release = musicbrainz.get_release(&release_id).await.map_err(|e| match e {
-        crate::musicbrainz::RequestError::Reqwest(error) => {
-            error!("Reqwest: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        },
-        crate::musicbrainz::RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => StatusCode::NOT_FOUND,
-        crate::musicbrainz::RequestError::MusicbrainzError(status, error) => {
-            error!("Musicbrainz: {status}: {error}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        },
-    })?;
+    State(AppState {
+        musicbrainz, db, ..
+    }): State<AppState>,
+    Path((artist_id, release_group_id)): Path<(String, String)>,
+) -> Result<Json<entity::release_group::Model>, StatusCode> {
+    info!("Creating release group {release_group_id} on artist {artist_id}");
+    let group = musicbrainz
+        .get_release_group(&release_group_id)
+        .await
+        .map_err(|e| match e {
+            crate::musicbrainz::RequestError::Reqwest(error) => {
+                error!("Reqwest: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+            crate::musicbrainz::RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => {
+                StatusCode::NOT_FOUND
+            }
+            crate::musicbrainz::RequestError::MusicbrainzError(status, error) => {
+                error!("Musicbrainz: {status}: {error}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        })?;
 
-    let artist_credit = release.artist_credit.first().ok_or_else(|| {
-        error!("Release does not have artist credit");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    if artist_credit.artist.id != artist_id {
-        error!("Tried to create release on invalid artist");
-        return Err(StatusCode::BAD_REQUEST)
-    }
-    
-    let model = entity::release::ActiveModel {
-        artist_id: ActiveValue::Set(artist_credit.artist.id.clone()),
-        musicbrainz_id: ActiveValue::Set(release.id),
+    let model = entity::release_group::ActiveModel {
+        artist_id: ActiveValue::Set(artist_id.clone()),
+        musicbrainz_id: ActiveValue::Set(group.id),
         downloaded: ActiveValue::Set(false),
-        title: ActiveValue::Set(release.title)
-    }.insert(&db).await.map_err(|e| {
+        title: ActiveValue::Set(group.title),
+        r#type: ActiveValue::Set(group.primary_type),
+    }
+    .insert(&db)
+    .await
+    .map_err(|e| {
         error!("Db error: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -47,18 +54,69 @@ pub async fn create(
 
 pub async fn fetch_all(
     State(AppState { db, .. }): State<AppState>,
-    Path(artist_id): Path<String>
-) -> Result<Json<Vec<entity::release::Model>>, StatusCode> {
-    let artist = entity::artist::Entity::find_by_id(&artist_id).one(&db).await.map_err(|e| {
-        error!("Db error: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?.ok_or(StatusCode::NOT_FOUND)?;
+    Path(artist_id): Path<String>,
+) -> Result<Json<Vec<entity::release_group::Model>>, StatusCode> {
+    let artist = entity::artist::Entity::find_by_id(&artist_id)
+        .one(&db)
+        .await
+        .map_err(|e| {
+            error!("Db error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
     info!("Found artist: {:?}", artist);
 
-    let releases = artist.find_related(entity::release::Entity).all(&db).await.map_err(|e| {
-        error!("Db error: {e}");
+    let releases = artist
+        .find_related(entity::release_group::Entity)
+        .all(&db)
+        .await
+        .map_err(|e| {
+            error!("Db error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(releases))
+}
+
+pub async fn download(
+    State(AppState { antra, db, config, .. }): State<AppState>,
+    Path((artist_id, release_id)): Path<(String, String)>,
+) -> Result<(), StatusCode> {
+    let artist = entity::artist::Entity::find_by_id(&artist_id)
+        .one(&db)
+        .await
+        .map_err(|e| {
+            error!("Db error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    let release = artist
+        .find_related(entity::release_group::Entity)
+        .filter(entity::release_group::Column::MusicbrainzId.eq(release_id.clone()))
+        .one(&db)
+        .await
+        .map_err(|e| {
+            error!("Db error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    antra.download_release(&artist.name, &release.title, &PathBuf::from(config.music_dir)).await.map_err(|e| {
+        error!("Download failed: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    let release = entity::release_group::ActiveModel {
+        musicbrainz_id: ActiveValue::Unchanged(release_id),
+        downloaded: ActiveValue::Set(true),
+        ..Default::default()
+    };    
+
+    release.save(&db).await.map_err(|e| {
+       error!("Failed to mark release as downloaded: {e}");
+       StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     
-    Ok(Json(releases))
+    Ok(())
 }

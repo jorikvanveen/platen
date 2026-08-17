@@ -21,16 +21,17 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(Release::Table)
+                    .table(ReleaseGroup::Table)
                     .if_not_exists()
-                    .col(string(Release::MusicbrainzId).primary_key())
-                    .col(string(Release::Title))
-                    .col(string(Release::ArtistId))
-                    .col(boolean(Release::Downloaded))
+                    .col(string(ReleaseGroup::MusicbrainzId).primary_key())
+                    .col(string(ReleaseGroup::Title))
+                    .col(string(ReleaseGroup::ArtistId))
+                    .col(string(ReleaseGroup::Type))
+                    .col(boolean(ReleaseGroup::Downloaded))
                     .foreign_key(
                         ForeignKey::create()
                             .name("artist-release-fk")
-                            .from(Release::Table, Release::ArtistId)
+                            .from(ReleaseGroup::Table, ReleaseGroup::ArtistId)
                             .to(Artist::Table, Artist::MusicbrainzId)
                             .on_delete(Cascade)
                             .on_update(Cascade)
@@ -48,7 +49,7 @@ impl MigrationTrait for Migration {
             .await?;
         
         manager
-            .drop_table(Table::drop().table(Release::Table).to_owned())
+            .drop_table(Table::drop().table(ReleaseGroup::Table).to_owned())
             .await?;
         
         Ok(())
@@ -63,10 +64,11 @@ enum Artist {
 }
 
 #[derive(DeriveIden)]
-enum Release {
+enum ReleaseGroup {
     Table,
     MusicbrainzId,
     Title,
     ArtistId,
+    Type,
     Downloaded
 }

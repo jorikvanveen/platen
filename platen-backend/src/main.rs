@@ -21,7 +21,8 @@ struct Config {
     antra_password: String,
     antra_username: String,
     tidal_client_id: String,
-    tidal_client_secret: String
+    tidal_client_secret: String,
+    music_dir: String
 }
 
 #[tokio::main]
@@ -39,24 +40,30 @@ async fn main() -> color_eyre::Result<()> {
     antra.login().await?;
 
     let musicbrainz = Musicbrainz::new();
-
     {
-        let release = musicbrainz.get_release("8be734f8-6abd-471d-b332-e2837cda52ae").await?;
-        antra.download_release(&release, &PathBuf::from("/mnt/qb/mnt/media/music")).await?;
+        dbg!(antra.tidal.lock().await.find_album("The beatles please please me").await?);
     }
+
+    //{
+    //    let release = musicbrainz.get_release("8be734f8-6abd-471d-b332-e2837cda52ae").await?;
+    //    antra.download_release(&release, &PathBuf::from("/mnt/qb/mnt/media/music")).await?;
+    //}
 
     let db: DatabaseConnection = Database::connect(&config.database_url).await?;
     Migrator::up(&db, None).await?;
 
     let bind_address = config.bind_address.clone();
-    let state = AppState { musicbrainz: Musicbrainz::new(), db, config, antra };
+    let state = AppState { musicbrainz, db, config, antra };
     let app = Router::new()
+        .route("/artist", get(routes::artist::list))
         .route("/artist/{id}", get(routes::artist::get))
         .route("/artist/{id}", post(routes::artist::create))
-        .route("/artist/{artist_id}/release/{release_id}", post(routes::release::create))
-        .route("/artist/{artist_id}/releases", get(routes::release::fetch_all))
+        .route("/artist/{artist_id}/release-group/{release_group_id}", post(routes::release::create))
+        .route("/artist/{artist_id}/release-groups", get(routes::release::fetch_all))
+        .route("/artist/{artist_id}/release/{release_id}", post(routes::release::download))
         .route("/mb/search_artist/{query}", get(routes::mb::search_artist))
         .route("/mb/artist/{artist_id}", get(routes::mb::get_artist))
+        .route("/mb/artist/{artist_id}/release-groups", get(routes::mb::get_artist_release_groups))
         .route("/", get(|| async { "Hello world" }))
         .with_state(state);
     let listener = TcpListener::bind(&bind_address).await?;

@@ -13,13 +13,13 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "super::release::Entity")]
-    Release,
+    #[sea_orm(has_many = "super::release_group::Entity")]
+    ReleaseGroup,
 }
 
-impl Related<super::release::Entity> for Entity {
+impl Related<super::release_group::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Release.def()
+        Relation::ReleaseGroup.def()
     }
 }
 
