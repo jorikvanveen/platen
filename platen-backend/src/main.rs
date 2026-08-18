@@ -5,7 +5,7 @@ use figment::{Figment, providers::{Env, Format, Toml}};
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, process::Command};
 
 use crate::{downloaders::{Downloader, antra::Antra}, musicbrainz::Musicbrainz};
 
