@@ -293,7 +293,7 @@ impl Downloader for Antra {
         let zip_path = self.job_download(&job_id).await?;
 
         tracing::info!("Unzipping");
-        let exit_status = Command::new("/usr/bin/env").arg("unzip").arg("-n").arg(zip_path).arg("-d").arg(destination).spawn()?.wait().await?;
+        let exit_status = Command::new("unzip").arg("-n").arg(zip_path).arg("-d").arg(destination).spawn()?.wait().await?;
         if !exit_status.success() {
             return Err(AntraError::UnzipFailed)
         }
