@@ -2,7 +2,7 @@ import adapter from '@sveltejs/adapter-node';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
-const apiTarget = process.env.PLATEN_BACKEND_URL ?? 'http://localhost:3000';
+const apiTarget = process.env.PLATEN_DEV_BACKEND_ADDRESS ?? 'http://localhost:3000';
 
 export default defineConfig({
 	plugins: [
