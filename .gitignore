@@ -6,4 +6,4 @@ platen-backend/db.sqlite
 platen-backend/out.webm
 platen-backend/rustypipe_cache.json
 platen-backend/target
-result/
+result
