@@ -16,7 +16,7 @@ pub async fn get(
             None => Err(StatusCode::NOT_FOUND)
         },
         Err(e) => {
-            error!("DB Error: {}", e);
+            error!("DB Error: {:#?}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -31,12 +31,12 @@ pub async fn create(
     info!("Creating artist {id}");
     let artist = musicbrainz.get_artist(&id).await.map_err(|e| match e {
         RequestError::Reqwest(error) => {
-            error!("Reqwest: {error}");
+            error!("Reqwest: {error:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         },
         RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => StatusCode::NOT_FOUND,
         RequestError::MusicbrainzError(status, error) => {
-            error!("Musicbrainz: {status}: {error}");
+            error!("Musicbrainz: {status}: {error:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         },
     })?;
@@ -47,7 +47,7 @@ pub async fn create(
     };
     
     let result_model = artist_model.insert(&db).await.map_err(|e| {
-        error!("DB error: {e}");
+        error!("DB error: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     
@@ -59,7 +59,7 @@ pub async fn list(
 ) -> Result<Json<Vec<artist::Model>>, StatusCode> {
     info!("Listing artists");
     let artists = artist::Entity::find().all(&db).await.map_err(|e| {
-        error!("{}", e);
+        error!("{:#?}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     Ok(Json(artists))

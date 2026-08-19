@@ -23,14 +23,14 @@ pub async fn create(
         .await
         .map_err(|e| match e {
             crate::musicbrainz::RequestError::Reqwest(error) => {
-                error!("Reqwest: {error}");
+                error!("Reqwest: {error:#?}");
                 StatusCode::INTERNAL_SERVER_ERROR
             }
             crate::musicbrainz::RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => {
                 StatusCode::NOT_FOUND
             }
             crate::musicbrainz::RequestError::MusicbrainzError(status, error) => {
-                error!("Musicbrainz: {status}: {error}");
+                error!("Musicbrainz: {status}: {error:#?}");
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         })?;
@@ -45,7 +45,7 @@ pub async fn create(
     .insert(&db)
     .await
     .map_err(|e| {
-        error!("Db error: {e}");
+        error!("Db error: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -60,7 +60,7 @@ pub async fn fetch_all(
         .one(&db)
         .await
         .map_err(|e| {
-            error!("Db error: {e}");
+            error!("Db error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -71,7 +71,7 @@ pub async fn fetch_all(
         .all(&db)
         .await
         .map_err(|e| {
-            error!("Db error: {e}");
+            error!("Db error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
@@ -86,7 +86,7 @@ pub async fn download(
         .one(&db)
         .await
         .map_err(|e| {
-            error!("Db error: {e}");
+            error!("Db error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -97,13 +97,13 @@ pub async fn download(
         .one(&db)
         .await
         .map_err(|e| {
-            error!("Db error: {e}");
+            error!("Db error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
     antra.download_release(&artist.name, &release.title, &PathBuf::from(config.music_dir)).await.map_err(|e| {
-        error!("Download failed: {e}");
+        error!("Download failed: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -114,7 +114,7 @@ pub async fn download(
     };    
 
     release.save(&db).await.map_err(|e| {
-       error!("Failed to mark release as downloaded: {e}");
+       error!("Failed to mark release as downloaded: {e:#?}");
        StatusCode::INTERNAL_SERVER_ERROR
     })?;
     

@@ -26,7 +26,7 @@ pub async fn get_artist(
                 StatusCode::NOT_FOUND
             }
             e => {
-                error!("{e}");
+                error!("{e:#?}");
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         })?;
@@ -41,7 +41,7 @@ pub async fn search_artist(
     info!("Searching for artist: {query}");
 
     let result = musicbrainz.search_artist(&query).await.map_err(|e| {
-        error!("{e}");
+        error!("{e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -64,7 +64,7 @@ pub async fn get_artist_release_groups(
             .get_release_groups(&artist_id, page)
             .await
             .map_err(|e| {
-                error!("{}", e);
+                error!("{:#?}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?,
     ))
