@@ -2,14 +2,14 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 use tokio::{sync::Semaphore, task, time::sleep};
 
-use crate::musicbrainz::release::{Release, ReleaseGroup};
+use crate::musicbrainz::release_group::ReleaseGroup;
 
-pub mod youtube;
 pub mod antra;
+pub mod youtube;
 
 pub trait Downloader {
     type Error: Error;
-    async fn download_release(
+    async fn download_release_group(
         &self,
         artist: &str,
         release_group: &str,
@@ -20,13 +20,16 @@ pub trait Downloader {
 #[derive(Clone, Debug)]
 pub struct RateLimit {
     semaphore: Arc<Semaphore>,
-    cooldown_ms: u64
+    cooldown_ms: u64,
 }
 
 impl RateLimit {
     pub fn new(cooldown_ms: u64) -> RateLimit {
         let semaphore = Arc::new(Semaphore::new(1));
-        RateLimit { semaphore, cooldown_ms }
+        RateLimit {
+            semaphore,
+            cooldown_ms,
+        }
     }
 
     pub async fn wait(&self) {

@@ -5,10 +5,10 @@
     const { data }: PageProps = $props();
 
     let download_state: { [key: string]: "downloading" | "done" | undefined } = $state({});
-    
+
     async function download(id: string) {
       download_state[id] = "downloading";
-      const resp = await fetch(`${API_URL}/artist/${data.artist.musicbrainz_id}/release/${id}`, {
+      const resp = await fetch(`${API_URL}/artist/${data.artist.musicbrainz_id}/release-group/${id}/download`, {
         method: "POST"
       });
 
@@ -20,7 +20,7 @@
     }
 </script>
 <h1>{data.artist.name}</h1>
-<a href={"/artist/" + data.artist.musicbrainz_id + "/add-release/0"}>Add release</a><br/><br/>
+<a href={"/artist/" + data.artist.musicbrainz_id + "/add-release-group/0"}>Add release group</a><br/><br/>
 
 <table>
     <thead>
@@ -31,14 +31,14 @@
         </tr>
     </thead>
     <tbody>
-        {#each data.releases as release}
+        {#each data.release_groups as release_group}
             <tr>
-                <td>{release.title}</td>
+                <td>{release_group.title}</td>
                 <td>
-                    {#if release.downloaded || download_state[release.musicbrainz_id] == "done"}
+                    {#if release_group.downloaded || download_state[release_group.musicbrainz_id] == "done"}
                         Downloaded
                     {:else}
-                        <button disabled={download_state[release.musicbrainz_id] == "downloading"} onclick={() => download(release.musicbrainz_id)}>Download</button>
+                        <button disabled={download_state[release_group.musicbrainz_id] == "downloading"} onclick={() => download(release_group.musicbrainz_id)}>Download</button>
                     {/if}
                 </td>
                 <td></td>

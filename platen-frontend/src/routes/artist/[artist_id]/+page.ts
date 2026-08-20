@@ -6,7 +6,7 @@ export type Artist = {
   name: string
 }
 
-export type Release = {
+export type ReleaseGroup = {
   musicbrainz_id: string,
   title: string,
   artist_id: string,
@@ -15,15 +15,15 @@ export type Release = {
 
 export const load: PageLoad = async ({ fetch, params }) => {
   const artist_req = fetch(`${API_URL}/artist/${params.artist_id}`);
-  const releases_req = fetch(`${API_URL}/artist/${params.artist_id}/release-groups`);
+  const release_groups_req = fetch(`${API_URL}/artist/${params.artist_id}/release-groups`);
   const artist_resp = await artist_req;
-  const releases_resp = await releases_req;
+  const release_groups_resp = await release_groups_req;
   const artist: Artist = await artist_resp.json();
-  const releases: Release[] = await releases_resp.json();
+  const release_groups: ReleaseGroup[] = await release_groups_resp.json();
   console.log(artist)
-  console.log(releases)
+  console.log(release_groups)
   return {
     artist,
-    releases
+    release_groups
   }
 }

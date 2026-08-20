@@ -5,7 +5,7 @@
     let { data }: PageProps = $props()
 
     let added_ids: string[] = $state([]);
-    async function addRelease(id: string) {
+    async function addReleaseGroup(id: string) {
       let resp = await fetch(`${API_URL}/artist/${data.artist.musicbrainz_id}/release-group/${id}`, {
         method: "POST"
       })
@@ -34,7 +34,7 @@
                 <td>{release_group.primary_type}</td>
                 <td>
                     {#if !added_ids.includes(release_group.id)}
-                        <button onclick={() => addRelease(release_group.id)}>Add</button>
+                        <button onclick={() => addReleaseGroup(release_group.id)}>Add</button>
                     {/if}
                 </td>
             </tr>

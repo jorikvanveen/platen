@@ -5,7 +5,10 @@ use axum::{
     extract::{Path, State},
 };
 use reqwest::StatusCode;
-use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, IntoActiveModel, ModelTrait, QueryFilter};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, IntoActiveModel, ModelTrait,
+    QueryFilter,
+};
 use sea_schema::sea_query::Expr;
 use tracing::{dispatcher::with_default, error, info};
 
@@ -66,7 +69,7 @@ pub async fn fetch_all(
         .ok_or(StatusCode::NOT_FOUND)?;
     info!("Found artist: {:?}", artist);
 
-    let releases = artist
+    let release_groups = artist
         .find_related(entity::release_group::Entity)
         .all(&db)
         .await
@@ -75,12 +78,14 @@ pub async fn fetch_all(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    Ok(Json(releases))
+    Ok(Json(release_groups))
 }
 
 pub async fn download(
-    State(AppState { antra, db, config, .. }): State<AppState>,
-    Path((artist_id, release_id)): Path<(String, String)>,
+    State(AppState {
+        antra, db, config, ..
+    }): State<AppState>,
+    Path((artist_id, release_group_id)): Path<(String, String)>,
 ) -> Result<(), StatusCode> {
     let artist = entity::artist::Entity::find_by_id(&artist_id)
         .one(&db)
@@ -91,9 +96,9 @@ pub async fn download(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let release = artist
+    let release_group = artist
         .find_related(entity::release_group::Entity)
-        .filter(entity::release_group::Column::MusicbrainzId.eq(release_id.clone()))
+        .filter(entity::release_group::Column::MusicbrainzId.eq(release_group_id.clone()))
         .one(&db)
         .await
         .map_err(|e| {
@@ -102,21 +107,28 @@ pub async fn download(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    antra.download_release(&artist.name, &release.title, &PathBuf::from(config.music_dir)).await.map_err(|e| {
-        error!("Download failed: {e:#?}");
+    antra
+        .download_release_group(
+            &artist.name,
+            &release_group.title,
+            &PathBuf::from(config.music_dir),
+        )
+        .await
+        .map_err(|e| {
+            error!("Download failed: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let release_group = entity::release_group::ActiveModel {
+        musicbrainz_id: ActiveValue::Unchanged(release_group_id),
+        downloaded: ActiveValue::Set(true),
+        ..Default::default()
+    };
+
+    release_group.save(&db).await.map_err(|e| {
+        error!("Failed to mark release group as downloaded: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    let release = entity::release_group::ActiveModel {
-        musicbrainz_id: ActiveValue::Unchanged(release_id),
-        downloaded: ActiveValue::Set(true),
-        ..Default::default()
-    };    
-
-    release.save(&db).await.map_err(|e| {
-       error!("Failed to mark release as downloaded: {e:#?}");
-       StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    
     Ok(())
 }

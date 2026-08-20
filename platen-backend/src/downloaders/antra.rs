@@ -1,7 +1,13 @@
 use base64::prelude::*;
 use content_disposition::parse_content_disposition;
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use tokio::{fs::{self, File}, io::{self, AsyncWriteExt}, process::Command, sync::Mutex, time::sleep};
+use tokio::{
+    fs::{self, File},
+    io::{self, AsyncWriteExt},
+    process::Command,
+    sync::Mutex,
+    time::sleep,
+};
 
 use chrono::Utc;
 use color_eyre::Report;
@@ -17,7 +23,6 @@ use crate::{
             AlbumSearchData, AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,
         },
     },
-    musicbrainz::release::Release,
 };
 
 static BASE_URL: &'static str = "https://antra.hoshi.cfd/api";
@@ -176,7 +181,7 @@ impl Antra {
             None => {
                 tracing::error!("Content-disposion did not have filename");
                 return Err(AntraError::DownloadFailed);
-            },
+            }
         };
 
         let tmp = std::env::temp_dir();
@@ -258,19 +263,19 @@ pub enum AntraError {
     DownloadFailed,
 
     #[error("Failed to unzip download")]
-    UnzipFailed
+    UnzipFailed,
 }
 
 impl Downloader for Antra {
     type Error = AntraError;
 
-    async fn download_release(
+    async fn download_release_group(
         &self,
         artist: &str,
         release_title: &str,
         destination: &std::path::Path,
     ) -> Result<(), Self::Error> {
-        tracing::info!("Downloading release: {}", &release_title);
+        tracing::info!("Downloading release group: {}", &release_title);
         let release_query = format!("{artist} {}", release_title);
         let albums = { self.tidal.lock().await.find_album(&release_query).await? };
 
@@ -283,21 +288,30 @@ impl Downloader for Antra {
 
         loop {
             sleep(Duration::from_millis(5000)).await;
-            let JobStatusResponse { status: job_status, .. } = self.job_status(&job_id).await?;
+            let JobStatusResponse {
+                status: job_status, ..
+            } = self.job_status(&job_id).await?;
             tracing::info!("Job status: {job_status}");
             if job_status == "complete" {
-                break
+                break;
             }
         }
 
         let zip_path = self.job_download(&job_id).await?;
 
         tracing::info!("Unzipping");
-        let exit_status = Command::new("unzip").arg("-n").arg(zip_path).arg("-d").arg(destination).spawn()?.wait().await?;
+        let exit_status = Command::new("unzip")
+            .arg("-n")
+            .arg(zip_path)
+            .arg("-d")
+            .arg(destination)
+            .spawn()?
+            .wait()
+            .await?;
         if !exit_status.success() {
-            return Err(AntraError::UnzipFailed)
+            return Err(AntraError::UnzipFailed);
         }
-        
+
         Ok(())
     }
 }

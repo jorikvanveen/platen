@@ -34,10 +34,11 @@ impl MigrationTrait for Migration {
                             .from(ReleaseGroup::Table, ReleaseGroup::ArtistId)
                             .to(Artist::Table, Artist::MusicbrainzId)
                             .on_delete(Cascade)
-                            .on_update(Cascade)
+                            .on_update(Cascade),
                     )
-                    .to_owned()
-            ).await?;
+                    .to_owned(),
+            )
+            .await?;
 
         Ok(())
     }
@@ -47,11 +48,11 @@ impl MigrationTrait for Migration {
         manager
             .drop_table(Table::drop().table(Artist::Table).to_owned())
             .await?;
-        
+
         manager
             .drop_table(Table::drop().table(ReleaseGroup::Table).to_owned())
             .await?;
-        
+
         Ok(())
     }
 }
@@ -70,5 +71,5 @@ enum ReleaseGroup {
     Title,
     ArtistId,
     Type,
-    Downloaded
+    Downloaded,
 }

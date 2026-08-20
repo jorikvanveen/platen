@@ -8,7 +8,10 @@ use tracing::{error, info};
 
 use crate::{
     AppState,
-    musicbrainz::{self, artist::{ArtistSearchResult, ReleaseGroupResponse}},
+    musicbrainz::{
+        self,
+        artist::{ArtistSearchResult, ReleaseGroupResponse},
+    },
 };
 
 #[axum::debug_handler]

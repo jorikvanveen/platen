@@ -1,16 +1,15 @@
 use rustypipe::client::RustyPipe;
+use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
 use tokio::fs;
 use tokio::io;
 use tokio::process::Command;
 use tokio::time::sleep;
-use std::path::Path;
-use std::process::Stdio;
-use std::time::Duration;
 use tracing::info;
 
 use crate::downloaders::Downloader;
 use crate::downloaders::RateLimit;
-use crate::musicbrainz::release::Release;
 
 pub struct Youtube {
     rate_limit: RateLimit,
@@ -38,12 +37,12 @@ pub enum DownloadError {
     Fs(#[from] io::Error),
 
     #[error("yt-dlp failed: {0}")]
-    YtDlp(String)
+    YtDlp(String),
 }
 
 //impl Downloader for Youtube {
 //    type Error = DownloadError;
-//    async fn download_release(
+//    async fn download_release_group(
 //        &self,
 //        release: &Release,
 //        out_dir: &Path,
@@ -74,7 +73,7 @@ pub enum DownloadError {
 //            .iter()
 //            .find(|a| a.name.to_lowercase().trim() == release.title.to_lowercase().trim())
 //            .ok_or(DownloadError::NotFound)?;
-//            
+//
 //        info!("Downloading album id: {}", yt_album.id);
 //        self.rate_limit.wait().await;
 //        let url = self.rp.query().resolve_string(&yt_album.id, true).await?.to_url();

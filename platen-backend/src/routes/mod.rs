@@ -1,3 +1,3 @@
 pub mod artist;
-pub mod release;
 pub mod mb;
+pub mod release_group;
