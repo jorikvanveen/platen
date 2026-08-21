@@ -220,9 +220,9 @@ struct CreateJobRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
-struct CreateJobResponse {
-    job_id: String,
-    ws_token: String,
+pub struct CreateJobResponse {
+    pub job_id: String,
+    pub ws_token: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -232,8 +232,8 @@ struct ResolveRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
-struct ResolveResponse {
-    track_count: usize, // There is much more but we dont need all of that to start the download
+pub struct ResolveResponse {
+    pub track_count: usize, // There is much more but we dont need all of that to start the download
 }
 
 #[derive(Error, Debug)]
