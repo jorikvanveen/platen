@@ -24,8 +24,10 @@
 </script>
 
 <h1>Add artist</h1>
-<input id="search" type="text" bind:value={query}>
-<button onclick={submit}>Search</button>
+<form onsubmit={(e) => { e.preventDefault(); submit(); }}>
+    <input id="search" type="text" bind:value={query}>
+    <button type="submit">Search</button>
+</form>
 <br/>
 <br/>
 <br/>
