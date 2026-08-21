@@ -10,6 +10,8 @@ pub mod release_group;
 
 static BASE_URL: &'static str = "https://musicbrainz.org/ws/2";
 
+pub const PAGE_SIZE: usize = 100;
+
 #[derive(thiserror::Error, Debug)]
 pub enum RequestError {
     #[error("Error sending or receiving request: {0}")]

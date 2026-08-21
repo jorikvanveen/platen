@@ -1,4 +1,4 @@
-import { API_URL } from "$lib/constants";
+import { API_URL, PAGE_SIZE } from "$lib/constants";
 import type { PageLoad } from "./$types";
 
 export type Artist = {
@@ -30,7 +30,7 @@ export const load: PageLoad = async ({ fetch, params }) => {
   return {
     artist,
     page: params.page,
-    pages: Math.floor(release_groups_resp.release_group_count / 100),
+    pages: Math.ceil(release_groups_resp.release_group_count / PAGE_SIZE),
     release_groups: release_groups_resp.release_groups
   }
 }

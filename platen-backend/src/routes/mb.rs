@@ -10,7 +10,7 @@ use crate::{
     AppState,
     musicbrainz::{
         self,
-        artist::{ArtistSearchResult, ReleaseGroupResponse},
+        artist::{ArtistSearchResponse, ReleaseGroupResponse},
     },
 };
 
@@ -40,10 +40,11 @@ pub async fn get_artist(
 pub async fn search_artist(
     State(AppState { musicbrainz, .. }): State<AppState>,
     Path(query): Path<String>,
-) -> Result<Json<Vec<ArtistSearchResult>>, StatusCode> {
-    info!("Searching for artist: {query}");
+    Query(Pagination { page }): Query<Pagination>,
+) -> Result<Json<ArtistSearchResponse>, StatusCode> {
+    info!("Searching for artist: {query} (page {page})");
 
-    let result = musicbrainz.search_artist(&query).await.map_err(|e| {
+    let result = musicbrainz.search_artist(&query, page).await.map_err(|e| {
         error!("{e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;

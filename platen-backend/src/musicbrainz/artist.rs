@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 use super::release_group::{Alias, Area};
-use super::{BASE_URL, Musicbrainz, RequestError};
+use super::{BASE_URL, Musicbrainz, PAGE_SIZE, RequestError};
 impl Musicbrainz {
     #[instrument]
     pub async fn get_artist(&self, artist_id: &str) -> Result<Artist, RequestError> {
@@ -21,10 +21,12 @@ impl Musicbrainz {
     pub async fn search_artist(
         &self,
         query: &str,
-    ) -> Result<Vec<ArtistSearchResult>, RequestError> {
+        page: usize,
+    ) -> Result<ArtistSearchResponse, RequestError> {
         let url = format!(
-            "{BASE_URL}/artist?query={}&fmt=json",
-            urlencoding::encode(query)
+            "{BASE_URL}/artist?query={}&limit={PAGE_SIZE}&offset={}&fmt=json",
+            urlencoding::encode(query),
+            page * PAGE_SIZE
         );
         let resp = self.fetch_with_retry(&url).await?;
         if !resp.status().is_success() {
@@ -34,7 +36,7 @@ impl Musicbrainz {
             ));
         }
         let resp: ArtistSearchResponse = resp.json().await?;
-        Ok(resp.artists)
+        Ok(resp)
     }
 
     #[instrument]
@@ -44,8 +46,8 @@ impl Musicbrainz {
         page: usize,
     ) -> Result<ReleaseGroupResponse, RequestError> {
         let url = format!(
-            "{BASE_URL}/release-group/?artist={artist_id}&limit=100&offset={}&fmt=json",
-            page * 100
+            "{BASE_URL}/release-group/?artist={artist_id}&limit={PAGE_SIZE}&offset={}&fmt=json",
+            page * PAGE_SIZE
         );
         tracing::info!("URL: {}", url);
         let resp = self.fetch_with_retry(&url).await?;
@@ -60,10 +62,13 @@ impl Musicbrainz {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ArtistSearchResponse {
-    artists: Vec<ArtistSearchResult>,
+    #[serde(rename(deserialize = "count"))]
+    pub artist_count: usize,
+    pub artists: Vec<ArtistSearchResult>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
