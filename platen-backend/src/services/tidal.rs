@@ -170,22 +170,22 @@ impl Tidal {
 
 #[derive(Debug)]
 pub struct ResolvedTidalSearchedAlbum {
-    pub(crate) id: String,
-    title: String,
-    barcode_id: Option<String>,
-    number_of_volumes: Option<u32>,
-    number_of_items: Option<u32>,
-    duration: String, // ISO 8601
-    explicit: bool,
-    release_date: Option<String>, // 2022-04-20
+    pub id: String,
+    pub title: String,
+    pub barcode_id: Option<String>,
+    pub number_of_volumes: Option<u32>,
+    pub number_of_items: Option<u32>,
+    pub duration: String, // ISO 8601
+    pub explicit: bool,
+    pub release_date: Option<String>, // 2022-04-20
     //copyright
-    popularity: f64,
-    access_type: Option<String>,
-    availability: Vec<String>,
-    media_tags: Option<Vec<String>>,
+    pub popularity: f64,
+    pub access_type: Option<String>,
+    pub availability: Vec<String>,
+    pub media_tags: Option<Vec<String>>,
     //externalLinks,
-    r#type: String,
-    album_type: Option<String>, // EP, Single, Album
+    pub r#type: String,
+    pub album_type: Option<String>, // EP, Single, Album
 }
 
 impl

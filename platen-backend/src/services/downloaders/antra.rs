@@ -70,7 +70,7 @@ impl Antra {
         Ok(())
     }
 
-    pub async fn resolve(&self, url: &str) -> Result<ResolveResponse, AntraError> {
+    async fn resolve(&self, url: &str) -> Result<ResolveResponse, AntraError> {
         let resp = self
             .client
             .post(format!("{BASE_URL}/resolve"))
@@ -89,7 +89,7 @@ impl Antra {
         Ok(resp.json().await?)
     }
 
-    pub async fn create_job(
+    async fn create_job(
         &self,
         url: &str,
         track_count: usize,
@@ -118,7 +118,7 @@ impl Antra {
         Ok(resp.json().await?)
     }
 
-    pub async fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, AntraError> {
+    async fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, AntraError> {
         let resp = self
             .client
             .get(format!("{BASE_URL}/jobs/{job_id}/status"))
@@ -138,7 +138,7 @@ impl Antra {
         Ok(serde_json::from_str(&text).unwrap())
     }
 
-    pub async fn job_download(&self, job_id: &str) -> Result<PathBuf, AntraError> {
+    async fn job_download(&self, job_id: &str) -> Result<PathBuf, AntraError> {
         let mut resp = self
             .client
             .get(format!("{BASE_URL}/jobs/{job_id}/download"))
@@ -190,7 +190,7 @@ impl Antra {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct JobStatusResponse {
+struct JobStatusResponse {
     status: String, // complete, zipping, downloading
     done: usize,
     failed: usize,
@@ -206,7 +206,7 @@ struct CreateJobRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct CreateJobResponse {
+struct CreateJobResponse {
     pub job_id: String,
     pub ws_token: String,
 }
@@ -218,7 +218,7 @@ struct ResolveRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ResolveResponse {
+struct ResolveResponse {
     pub track_count: usize, // There is much more but we dont need all of that to start the download
 }
 

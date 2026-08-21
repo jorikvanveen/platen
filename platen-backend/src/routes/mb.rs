@@ -3,11 +3,11 @@ use axum::{
     extract::{Path, Query, State},
 };
 use reqwest::StatusCode;
-use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{
     AppState,
+    routes::utils::Pagination,
     services::musicbrainz::{
         self,
         artist::{ArtistSearchResponse, ReleaseGroupResponse},
@@ -50,11 +50,6 @@ pub async fn search_artist(
     })?;
 
     Ok(Json(result))
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Pagination {
-    page: usize,
 }
 
 pub async fn get_artist_release_groups(

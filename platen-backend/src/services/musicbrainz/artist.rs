@@ -62,8 +62,7 @@ impl Musicbrainz {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ArtistSearchResponse {
     #[serde(rename(deserialize = "count"))]
@@ -71,8 +70,7 @@ pub struct ArtistSearchResponse {
     pub artists: Vec<ArtistSearchResult>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ArtistSearchResult {
     pub id: String,

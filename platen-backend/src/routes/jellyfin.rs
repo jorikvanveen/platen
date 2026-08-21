@@ -26,15 +26,13 @@ impl From<JellyfinError> for StatusCode {
     }
 }
 
-#[derive(Debug, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
 pub struct ImportFailure {
     pub name: String,
     pub reason: String,
 }
 
-#[derive(Debug, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
 pub struct ImportSummary {
     pub total_scanned: u32,
     pub created: u32,
