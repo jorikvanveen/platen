@@ -1,6 +1,7 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
     import { API_URL } from "$lib/constants";
+    import Pagination from "$lib/components/Pagination.svelte";
     import type { PageProps } from "./$types";
 
     let { data }: PageProps = $props();
@@ -53,10 +54,10 @@
             </tbody>
         </table>
         <br/>
-        <div>
-            <button disabled={data.page <= 0} onclick={() => goto(`/artist/add?q=${encodeURIComponent(data.query)}&page=${data.page - 1}`)}>Prev</button>
-            <span>Page {data.page + 1} of {data.pages}</span>
-            <button disabled={data.page >= data.pages - 1} onclick={() => goto(`/artist/add?q=${encodeURIComponent(data.query)}&page=${data.page + 1}`)}>Next</button>
-        </div>
+        <Pagination
+            page={data.page}
+            pages={data.pages}
+            hrefForPage={(n) => `/artist/add?q=${encodeURIComponent(data.query)}&page=${n}`}
+        />
     {/if}
 {/if}
