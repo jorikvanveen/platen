@@ -6,8 +6,11 @@ use tracing::{error, info, warn};
 
 use crate::{
     AppState,
-    entity::release_group,
-    services::jellyfin::{JellyfinAlbum, JellyfinError},
+    entity::{artist, release_group},
+    services::{
+        jellyfin::{JellyfinAlbum, JellyfinError},
+        musicbrainz::{Musicbrainz, RequestError},
+    },
 };
 
 impl From<JellyfinError> for StatusCode {
@@ -42,7 +45,7 @@ pub struct ImportSummary {
 }
 
 pub async fn import(
-    State(AppState { jellyfin, db, .. }): State<AppState>,
+    State(AppState { musicbrainz, jellyfin, db, .. }): State<AppState>,
 ) -> Result<Json<ImportSummary>, StatusCode> {
     info!("Starting Jellyfin import");
 
@@ -55,7 +58,7 @@ pub async fn import(
     let mut failures = Vec::new();
 
     for album in &albums {
-        match handle_album(album, &db).await {
+        match handle_album(album, &db, &musicbrainz).await {
             Ok(Outcome::Created) => created += 1,
             Ok(Outcome::Linked) => linked += 1,
             Ok(Outcome::Skipped) => skipped += 1,
@@ -86,42 +89,93 @@ enum Outcome {
     Skipped,
 }
 
-async fn handle_album(album: &JellyfinAlbum, db: &sea_orm::DatabaseConnection) -> Result<Outcome, String> {
+async fn handle_album(
+    album: &JellyfinAlbum,
+    db: &sea_orm::DatabaseConnection,
+    musicbrainz: &Musicbrainz,
+) -> Result<Outcome, String> {
     let mb_id = find_musicbrainz_release_group(&album.provider_ids);
 
     let mb_id = match mb_id {
-        Some(id) => id,
+        Some(id) => id.to_string(),
         None => {
             info!("Skipping {}: no MusicBrainz release group id", album.name);
             return Ok(Outcome::Skipped);
         }
     };
 
-    let existing = release_group::Entity::find_by_id(mb_id)
+    let existing = release_group::Entity::find_by_id(&mb_id)
         .one(db)
         .await
         .map_err(|e| e.to_string())?;
 
-    let Some(existing) = existing else {
-        info!("Skipping {}: not in platen, no create yet", album.name);
-        return Ok(Outcome::Skipped);
-    };
+    if let Some(existing) = existing {
+        if existing.jellyfin_id.is_some() {
+            info!("Skipping {}: already linked", album.name);
+            return Ok(Outcome::Skipped);
+        }
 
-    if existing.jellyfin_id.is_some() {
-        info!("Skipping {}: already linked", album.name);
-        return Ok(Outcome::Skipped);
+        let mut model: release_group::ActiveModel = existing.into();
+        model.jellyfin_id = Set(Some(album.id.clone()));
+        model.downloaded = Set(true);
+        model
+            .update(db)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        info!("Linked {} to Jellyfin id {}", album.name, album.id);
+        return Ok(Outcome::Linked);
     }
 
-    let mut model: release_group::ActiveModel = existing.into();
-    model.jellyfin_id = Set(Some(album.id.clone()));
-    model.downloaded = Set(true);
-    model
-        .update(db)
+    let group = musicbrainz
+        .get_release_group(&mb_id)
+        .await
+        .map_err(|e| match e {
+            RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => "MusicBrainz release group not found".to_string(),
+            e => e.to_string(),
+        })?;
+
+    let credit = group
+        .artist_credit
+        .as_ref()
+        .and_then(|credits| credits.first())
+        .ok_or_else(|| "missing artist_credit".to_string())?;
+
+    let artist_id = credit.artist.id.clone();
+    let artist_name = credit.artist.name.clone();
+
+    let exising_artist = artist::Entity::find_by_id(&artist_id)
+        .one(db)
         .await
         .map_err(|e| e.to_string())?;
 
-    info!("Linked {} to Jellyfin id {}", album.name, album.id);
-    Ok(Outcome::Linked)
+    if exising_artist.is_none() {
+        let artist = artist::ActiveModel {
+            musicbrainz_id: Set(artist_id.clone()),
+            name: Set(artist_name),
+        };
+        artist
+            .insert(db)
+            .await
+            .map_err(|e| e.to_string())?;
+        info!("Created artist {artist_id}");
+    }
+
+    let model = release_group::ActiveModel {
+        musicbrainz_id: Set(mb_id),
+        title: Set(group.title),
+        artist_id: Set(artist_id),
+        r#type: Set(group.primary_type),
+        downloaded: Set(true),
+        jellyfin_id: Set(Some(album.id.clone())),
+    };
+    model
+        .insert(db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    info!("Created release group {} for Jellyfin id {}", album.name, album.id);
+    Ok(Outcome::Created)
 }
 
 fn find_musicbrainz_release_group(provider_ids: &std::collections::HashMap<String, String>) -> Option<&str> {
