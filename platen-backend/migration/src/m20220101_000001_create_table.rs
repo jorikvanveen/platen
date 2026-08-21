@@ -30,7 +30,7 @@ impl MigrationTrait for Migration {
                     .col(boolean(ReleaseGroup::Downloaded))
                     .foreign_key(
                         ForeignKey::create()
-                            .name("artist-release-fk")
+                            .name("artist-release-group-fk")
                             .from(ReleaseGroup::Table, ReleaseGroup::ArtistId)
                             .to(Artist::Table, Artist::MusicbrainzId)
                             .on_delete(Cascade)
