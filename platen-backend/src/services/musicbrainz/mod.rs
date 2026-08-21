@@ -3,7 +3,7 @@ use std::sync::Arc;
 use reqwest::{ClientBuilder, StatusCode};
 use tracing::{debug, instrument};
 
-use crate::downloaders::RateLimit;
+use crate::services::downloaders::RateLimit;
 
 pub mod artist;
 pub mod release_group;

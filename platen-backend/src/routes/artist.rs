@@ -3,7 +3,7 @@ use reqwest::StatusCode;
 use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait};
 use tracing::{error, info};
 
-use crate::{AppState, entity::artist, musicbrainz::RequestError};
+use crate::{AppState, entity::artist, services::musicbrainz::RequestError};
 
 #[axum::debug_handler]
 pub async fn get(

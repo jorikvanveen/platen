@@ -12,7 +12,7 @@ use sea_orm::{
 use sea_schema::sea_query::Expr;
 use tracing::{dispatcher::with_default, error, info};
 
-use crate::{AppState, downloaders::Downloader, entity};
+use crate::{AppState, services::downloaders::Downloader, entity};
 
 pub async fn create(
     State(AppState {
@@ -25,14 +25,14 @@ pub async fn create(
         .get_release_group(&release_group_id)
         .await
         .map_err(|e| match e {
-            crate::musicbrainz::RequestError::Reqwest(error) => {
+            crate::services::musicbrainz::RequestError::Reqwest(error) => {
                 error!("Reqwest: {error:#?}");
                 StatusCode::INTERNAL_SERVER_ERROR
             }
-            crate::musicbrainz::RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => {
+            crate::services::musicbrainz::RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => {
                 StatusCode::NOT_FOUND
             }
-            crate::musicbrainz::RequestError::MusicbrainzError(status, error) => {
+            crate::services::musicbrainz::RequestError::MusicbrainzError(status, error) => {
                 error!("Musicbrainz: {status}: {error:#?}");
                 StatusCode::INTERNAL_SERVER_ERROR
             }

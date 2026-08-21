@@ -2,7 +2,7 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 use tokio::{sync::Semaphore, task, time::sleep};
 
-use crate::musicbrainz::release_group::ReleaseGroup;
+use crate::services::musicbrainz::release_group::ReleaseGroup;
 
 pub mod antra;
 

@@ -14,14 +14,12 @@ use serde::Deserialize;
 use tokio::{net::TcpListener, process::Command};
 
 use crate::{
-    downloaders::{Downloader, antra::Antra},
-    musicbrainz::Musicbrainz,
+    services::{downloaders::{Downloader, antra::Antra}, musicbrainz::Musicbrainz},
 };
 
-mod downloaders;
 mod entity;
-mod musicbrainz;
 mod routes;
+mod services;
 
 #[derive(Debug, Deserialize, Clone)]
 struct Config {

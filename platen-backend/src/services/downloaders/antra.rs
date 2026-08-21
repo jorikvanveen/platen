@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::{
     Config,
-    downloaders::{
+    services::downloaders::{
         Downloader,
         antra::tidal_response::{
             AlbumSearchData, AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,

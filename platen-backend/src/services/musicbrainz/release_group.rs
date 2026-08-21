@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
-use crate::musicbrainz::Musicbrainz;
+use crate::services::musicbrainz::Musicbrainz;
 use super::{BASE_URL, RequestError};
 
 impl Musicbrainz {

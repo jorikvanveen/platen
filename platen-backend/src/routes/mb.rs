@@ -8,7 +8,7 @@ use tracing::{error, info};
 
 use crate::{
     AppState,
-    musicbrainz::{
+    services::musicbrainz::{
         self,
         artist::{ArtistSearchResponse, ReleaseGroupResponse},
     },
