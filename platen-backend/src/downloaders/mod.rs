@@ -5,7 +5,6 @@ use tokio::{sync::Semaphore, task, time::sleep};
 use crate::musicbrainz::release_group::ReleaseGroup;
 
 pub mod antra;
-pub mod youtube;
 
 pub trait Downloader {
     type Error: Error;
