@@ -2,7 +2,6 @@ use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
 use tokio::{sync::Semaphore, task, time::sleep};
 
-
 pub mod antra;
 
 pub trait Downloader {
