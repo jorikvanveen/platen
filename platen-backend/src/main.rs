@@ -13,7 +13,12 @@ use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
 use tokio::{net::TcpListener, sync::Mutex};
 
-use crate::services::{downloaders::antra::Antra, musicbrainz::Musicbrainz, tidal::Tidal};
+use crate::services::{
+    downloaders::antra::Antra,
+    jellyfin::Jellyfin,
+    musicbrainz::Musicbrainz,
+    tidal::Tidal,
+};
 
 mod entity;
 mod routes;
@@ -28,6 +33,9 @@ struct Config {
     tidal_client_id: String,
     tidal_client_secret: String,
     music_dir: String,
+    jellyfin_url: String,
+    jellyfin_api_key: String,
+    jellyfin_user_id: String,
 }
 
 #[tokio::main]
@@ -52,12 +60,19 @@ async fn main() -> color_eyre::Result<()> {
 
     let musicbrainz = Musicbrainz::new();
 
+    let jellyfin = Jellyfin::new(
+        config.jellyfin_url.clone(),
+        config.jellyfin_api_key.clone(),
+        config.jellyfin_user_id.clone(),
+    );
+
     let db: DatabaseConnection = Database::connect(&config.database_url).await?;
     Migrator::up(&db, None).await?;
 
     let bind_address = config.bind_address.clone();
     let state = AppState {
         musicbrainz,
+        jellyfin,
         db,
         config,
         antra,
@@ -84,6 +99,7 @@ async fn main() -> color_eyre::Result<()> {
             "/mb/artist/{artist_id}/release-groups",
             get(routes::mb::get_artist_release_groups),
         )
+        .route("/jellyfin/import", post(routes::jellyfin::import))
         .route("/", get(|| async { "Hello world" }))
         .with_state(state);
     let listener = TcpListener::bind(&bind_address).await?;
@@ -96,6 +112,7 @@ async fn main() -> color_eyre::Result<()> {
 #[derive(Clone)]
 struct AppState {
     musicbrainz: Musicbrainz,
+    jellyfin: Jellyfin,
     antra: Antra,
     db: DatabaseConnection,
     config: Config,
