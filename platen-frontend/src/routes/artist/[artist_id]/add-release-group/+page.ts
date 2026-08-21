@@ -19,17 +19,18 @@ export type ReleaseGroupResp = {
   release_groups: ReleaseGroup[]
 }
 
-export const load: PageLoad = async ({ fetch, params }) => {
+export const load: PageLoad = async ({ fetch, params, url }) => {
   const artist_req = fetch(`${API_URL}/artist/${params.artist_id}`);
   const artist_resp = await artist_req;
   const artist: Artist = await artist_resp.json();
 
-  const release_groups_req = await fetch(`${API_URL}/mb/artist/${params.artist_id}/release-groups?page=${params.page}`)
+  const page = Number(url.searchParams.get("page") ?? "0");
+  const release_groups_req = await fetch(`${API_URL}/mb/artist/${params.artist_id}/release-groups?page=${page}`)
   const release_groups_resp: ReleaseGroupResp = await release_groups_req.json()
   console.log(release_groups_req.status)
   return {
     artist,
-    page: params.page,
+    page,
     pages: Math.ceil(release_groups_resp.release_group_count / PAGE_SIZE),
     release_groups: release_groups_resp.release_groups
   }

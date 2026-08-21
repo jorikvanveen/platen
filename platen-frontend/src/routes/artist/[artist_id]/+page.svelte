@@ -20,7 +20,7 @@
     }
 </script>
 <h1>{data.artist.name}</h1>
-<a href={"/artist/" + data.artist.musicbrainz_id + "/add-release-group/0"}>Add release group</a><br/><br/>
+<a href={"/artist/" + data.artist.musicbrainz_id + "/add-release-group?page=0"}>Add release group</a><br/><br/>
 
 <table>
     <thead>
