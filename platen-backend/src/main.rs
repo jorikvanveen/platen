@@ -1,4 +1,6 @@
 
+use std::sync::Arc;
+
 use axum::{
     Router,
     routing::{get, post},
@@ -10,9 +12,13 @@ use figment::{
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Mutex};
 
-use crate::services::{downloaders::antra::Antra, musicbrainz::Musicbrainz};
+use crate::services::{
+    downloaders::antra::Antra,
+    musicbrainz::Musicbrainz,
+    tidal::Tidal,
+};
 
 mod entity;
 mod routes;
@@ -40,7 +46,13 @@ async fn main() -> color_eyre::Result<()> {
         .extract()?;
     tracing::info!("Loaded configuration");
 
-    let antra = Antra::new(&config);
+    let tidal = Arc::new(Mutex::new(Tidal::new(
+        config.tidal_client_id.clone(),
+        config.tidal_client_secret.clone(),
+    )));
+    tidal.lock().await.login().await?;
+
+    let antra = Antra::new(&config, tidal.clone());
     antra.login().await?;
 
     let musicbrainz = Musicbrainz::new();
