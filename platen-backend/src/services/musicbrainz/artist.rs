@@ -120,7 +120,7 @@ pub struct ReleaseGroupResponse {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
 pub struct ReleaseGroup {
-    pub primary_type: String,
+    pub primary_type: Option<String>,
     pub disambiguation: Option<String>,
     pub id: String,
     pub first_release_date: Option<String>,

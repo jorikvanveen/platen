@@ -43,6 +43,7 @@ pub async fn create(
         downloaded: ActiveValue::Set(false),
         title: ActiveValue::Set(group.title),
         r#type: ActiveValue::Set(group.primary_type),
+        jellyfin_id: ActiveValue::Set(None),
     }
     .insert(&db)
     .await

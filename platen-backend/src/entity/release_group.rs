@@ -12,6 +12,7 @@ pub struct Model {
     pub artist_id: String,
     pub r#type: String,
     pub downloaded: bool,
+    pub jellyfin_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
