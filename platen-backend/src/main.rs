@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use axum::{
@@ -14,11 +13,7 @@ use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
 use tokio::{net::TcpListener, sync::Mutex};
 
-use crate::services::{
-    downloaders::antra::Antra,
-    musicbrainz::Musicbrainz,
-    tidal::Tidal,
-};
+use crate::services::{downloaders::antra::Antra, musicbrainz::Musicbrainz, tidal::Tidal};
 
 mod entity;
 mod routes;

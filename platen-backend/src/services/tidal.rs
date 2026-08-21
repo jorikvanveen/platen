@@ -1,6 +1,5 @@
 use base64::prelude::*;
 use chrono::Utc;
-use color_eyre::Report;
 use reqwest::{RequestBuilder, StatusCode};
 use std::time::Duration;
 use thiserror::Error;
@@ -41,24 +40,26 @@ impl Tidal {
         }
     }
 
-    pub async fn login(&mut self) -> color_eyre::Result<()> {
-        self.ensure_token()
-            .await
-            .map_err(|e| Report::msg(e.to_string()))?;
+    pub async fn login(&mut self) -> Result<(), TidalError> {
+        self.ensure_token().await?;
         tracing::info!("Logged in to tidal");
         Ok(())
     }
 
     async fn send_with_retry(
-        &self,
+        &mut self,
         builder: RequestBuilder,
     ) -> Result<reqwest::Response, TidalError> {
-        let mut retries = 0;
-        const MAX_RETRIES: u32 = 5;
+        const MAX_RETRIES: u32 = 3;
+        let mut retries: u32 = 0;
+        let mut retried_auth = false;
 
         loop {
-            // We're not sending streams so this shouldnt fail
-            let req = builder.try_clone().ok_or(TidalError::UnexpectedResponse)?;
+            let token = self.ensure_token().await?;
+            let req = builder
+                .try_clone()
+                .ok_or(TidalError::UnexpectedResponse)?
+                .bearer_auth(token);
 
             match req.send().await {
                 Ok(res)
@@ -74,6 +75,10 @@ impl Tidal {
                     sleep(Duration::from_secs(wait_secs)).await;
                     retries += 1;
                 }
+                Ok(res) if res.status() == StatusCode::UNAUTHORIZED && !retried_auth => {
+                    self.token = None;
+                    retried_auth = true;
+                }
                 Ok(res) => return Ok(res),
                 Err(_) if retries < MAX_RETRIES => {
                     sleep(Duration::from_secs(1 << retries)).await;
@@ -84,7 +89,7 @@ impl Tidal {
         }
     }
 
-    async fn get_oauth_token(&mut self) -> Result<tidal_response::OauthToken, TidalError> {
+    async fn get_oauth_token(&mut self) -> Result<(), TidalError> {
         let credentials =
             BASE64_STANDARD.encode(format!("{}:{}", self.client_id, self.client_secret));
 
@@ -109,31 +114,24 @@ impl Tidal {
             .await
             .map_err(|_| TidalError::UnexpectedResponse)?;
 
-        self.token = Some(response.access_token.clone());
-        self.expires_at = chrono::Utc::now() + Duration::from_secs(response.expires_in - 60);
+        self.token = Some(response.access_token);
+        self.expires_at =
+            chrono::Utc::now() + Duration::from_secs(response.expires_in.saturating_sub(60));
 
         tracing::info!("Authenticated with tidal");
 
-        Ok(response)
+        Ok(())
     }
 
     async fn ensure_token(&mut self) -> Result<String, TidalError> {
         let now = chrono::Utc::now();
 
-        if self.token.is_some() && self.expires_at < now {
+        if self.token.is_some() && self.expires_at > now {
             return Ok(self.token.clone().unwrap());
         }
 
-        let tidal_response::OauthToken { access_token, .. } = self.get_oauth_token().await?;
-        Ok(access_token)
-    }
-
-    async fn authenticate(
-        &mut self,
-        request: RequestBuilder,
-    ) -> Result<RequestBuilder, TidalError> {
-        let token = self.ensure_token().await?;
-        Ok(request.bearer_auth(token))
+        self.get_oauth_token().await?;
+        Ok(self.token.clone().unwrap())
     }
 
     pub async fn find_album(
@@ -144,11 +142,7 @@ impl Tidal {
         let url =
             format!("{TIDAL_BASE_URL}/searchResults?filter[query]={release_query}&include=albums");
 
-        let resp = self
-            .authenticate(self.client.get(url))
-            .await?
-            .send()
-            .await?;
+        let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
             return Err(TidalError::UnexpectedResponse);
@@ -167,7 +161,8 @@ impl Tidal {
                 resp.included
                     .iter()
                     .find(|included| included.id == relationship.id)
-                    .ok_or(TidalError::UnexpectedResponse).map(|found_include| (relationship, &found_include.attributes).into())
+                    .ok_or(TidalError::UnexpectedResponse)
+                    .map(|found_include| (relationship, &found_include.attributes).into())
             })
             .collect()
     }
@@ -193,16 +188,18 @@ pub struct ResolvedTidalSearchedAlbum {
     album_type: Option<String>, // EP, Single, Album
 }
 
-impl From<(
+impl
+    From<(
         &AlbumSearchRelationshipsAlbumsData,
         &AlbumSearchIncludedAttributes,
-    )>
-    for ResolvedTidalSearchedAlbum
+    )> for ResolvedTidalSearchedAlbum
 {
-    fn from(val: (
-        &AlbumSearchRelationshipsAlbumsData,
-        &AlbumSearchIncludedAttributes,
-    )) -> Self {
+    fn from(
+        val: (
+            &AlbumSearchRelationshipsAlbumsData,
+            &AlbumSearchIncludedAttributes,
+        ),
+    ) -> Self {
         let (data, attr) = val;
         ResolvedTidalSearchedAlbum {
             id: data.id.clone(),

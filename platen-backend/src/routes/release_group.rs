@@ -5,13 +5,10 @@ use axum::{
     extract::{Path, State},
 };
 use reqwest::StatusCode;
-use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, ModelTrait,
-    QueryFilter,
-};
+use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, ModelTrait, QueryFilter};
 use tracing::{error, info};
 
-use crate::{AppState, services::downloaders::Downloader, entity};
+use crate::{AppState, entity, services::downloaders::Downloader};
 
 pub async fn create(
     State(AppState {
@@ -28,9 +25,10 @@ pub async fn create(
                 error!("Reqwest: {error:#?}");
                 StatusCode::INTERNAL_SERVER_ERROR
             }
-            crate::services::musicbrainz::RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => {
-                StatusCode::NOT_FOUND
-            }
+            crate::services::musicbrainz::RequestError::MusicbrainzError(
+                StatusCode::NOT_FOUND,
+                _,
+            ) => StatusCode::NOT_FOUND,
             crate::services::musicbrainz::RequestError::MusicbrainzError(status, error) => {
                 error!("Musicbrainz: {status}: {error:#?}");
                 StatusCode::INTERNAL_SERVER_ERROR

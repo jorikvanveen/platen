@@ -301,4 +301,3 @@ impl Downloader for Antra {
         Ok(())
     }
 }
-
