@@ -169,6 +169,7 @@ impl Tidal {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ResolvedTidalSearchedAlbum {
     pub id: String,
     pub title: String,
@@ -236,6 +237,7 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
     pub struct AlbumSearchData {
         pub id: String,
         pub r#type: String,
@@ -254,12 +256,14 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
     pub struct AlbumSearchRelationshipsAlbumsData {
         pub id: String,
         pub r#type: String, // always "albums"
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
     pub struct AlbumSearchIncluded {
         pub id: String,
         pub r#type: String,

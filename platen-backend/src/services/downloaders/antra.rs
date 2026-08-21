@@ -190,6 +190,7 @@ impl Antra {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct JobStatusResponse {
     status: String, // complete, zipping, downloading
     done: usize,
@@ -206,6 +207,7 @@ struct CreateJobRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CreateJobResponse {
     pub job_id: String,
     pub ws_token: String,

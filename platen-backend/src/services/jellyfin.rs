@@ -96,6 +96,7 @@ impl Jellyfin {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct JellyfinAlbum {
     pub id: String,
     pub name: String,
@@ -129,6 +130,7 @@ mod jellyfin_response {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
     #[serde(rename_all = "PascalCase")]
     pub struct BaseItemDto {
         #[serde(default)]

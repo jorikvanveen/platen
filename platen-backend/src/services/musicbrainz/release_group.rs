@@ -25,6 +25,7 @@ impl Musicbrainz {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
+#[allow(dead_code)]
 pub struct ReleaseGroup {
     pub id: String,
     pub primary_type: String,
@@ -36,6 +37,7 @@ pub struct ReleaseGroup {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
+#[allow(dead_code)]
 pub struct ArtistCredit {
     pub name: String,
     pub artist: ArtistCreditArtist,
