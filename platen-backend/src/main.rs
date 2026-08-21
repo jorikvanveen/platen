@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 
 use axum::{
     Router,
@@ -11,11 +10,9 @@ use figment::{
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
-use tokio::{net::TcpListener, process::Command};
+use tokio::net::TcpListener;
 
-use crate::{
-    services::{downloaders::{Downloader, antra::Antra}, musicbrainz::Musicbrainz},
-};
+use crate::services::{downloaders::antra::Antra, musicbrainz::Musicbrainz};
 
 mod entity;
 mod routes;

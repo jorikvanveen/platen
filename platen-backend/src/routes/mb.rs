@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, Query, State},
 };
 use reqwest::StatusCode;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tracing::{error, info};
 
 use crate::{

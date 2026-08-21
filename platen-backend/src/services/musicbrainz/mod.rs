@@ -8,7 +8,7 @@ use crate::services::downloaders::RateLimit;
 pub mod artist;
 pub mod release_group;
 
-static BASE_URL: &'static str = "https://musicbrainz.org/ws/2";
+static BASE_URL: &str = "https://musicbrainz.org/ws/2";
 
 pub const PAGE_SIZE: usize = 100;
 

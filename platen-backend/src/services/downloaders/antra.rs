@@ -20,13 +20,13 @@ use crate::{
     services::downloaders::{
         Downloader,
         antra::tidal_response::{
-            AlbumSearchData, AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,
+            AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,
         },
     },
 };
 
-static BASE_URL: &'static str = "https://antra.hoshi.cfd/api";
-static TIDAL_BASE_URL: &'static str = "https://openapi.tidal.com/v2";
+static BASE_URL: &str = "https://antra.hoshi.cfd/api";
+static TIDAL_BASE_URL: &str = "https://openapi.tidal.com/v2";
 
 #[derive(Clone)]
 pub struct Antra {
@@ -81,7 +81,7 @@ impl Antra {
 
         self.tidal.lock().await.ensure_token().await?;
 
-        return Ok(());
+        Ok(())
     }
 
     pub async fn resolve(&self, url: &str) -> Result<ResolveResponse, AntraError> {
@@ -167,7 +167,7 @@ impl Antra {
         let content_disposition = match resp
             .headers()
             .get("Content-Disposition")
-            .map(|h| h.to_str().map(|h| parse_content_disposition(h)))
+            .map(|h| h.to_str().map(parse_content_disposition))
         {
             Some(Ok(c)) => c,
             None | Some(Err(_)) => {
@@ -199,7 +199,7 @@ impl Antra {
             file.write_all(&chunk).await?;
         }
         tracing::info!("Download finished");
-        Ok(zip_path.into())
+        Ok(zip_path)
     }
 }
 
@@ -428,7 +428,7 @@ impl TidalIndexer {
         &mut self,
         query: &str,
     ) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
-        let release_query = urlencoding::encode(&query);
+        let release_query = urlencoding::encode(query);
         let url =
             format!("{TIDAL_BASE_URL}/searchResults?filter[query]={release_query}&include=albums");
 
@@ -455,8 +455,7 @@ impl TidalIndexer {
                 resp.included
                     .iter()
                     .find(|included| included.id == relationship.id)
-                    .ok_or(TidalError::UnexpectedResponse)
-                    .and_then(|found_include| Ok((relationship, &found_include.attributes).into()))
+                    .ok_or(TidalError::UnexpectedResponse).map(|found_include| (relationship, &found_include.attributes).into())
             })
             .collect()
     }
@@ -482,24 +481,27 @@ pub struct ResolvedTidalSearchedAlbum {
     album_type: Option<String>, // EP, Single, Album
 }
 
-impl Into<ResolvedTidalSearchedAlbum>
-    for (
+impl From<(
         &AlbumSearchRelationshipsAlbumsData,
         &AlbumSearchIncludedAttributes,
-    )
+    )>
+    for ResolvedTidalSearchedAlbum
 {
-    fn into(self) -> ResolvedTidalSearchedAlbum {
-        let (data, attr) = self;
+    fn from(val: (
+        &AlbumSearchRelationshipsAlbumsData,
+        &AlbumSearchIncludedAttributes,
+    )) -> Self {
+        let (data, attr) = val;
         ResolvedTidalSearchedAlbum {
             id: data.id.clone(),
             title: attr.title.clone(),
             barcode_id: attr.barcode_id.clone(),
-            number_of_volumes: attr.number_of_volumes.clone(),
-            number_of_items: attr.number_of_items.clone(),
+            number_of_volumes: attr.number_of_volumes,
+            number_of_items: attr.number_of_items,
             duration: attr.duration.clone(),
-            explicit: attr.explicit.clone(),
+            explicit: attr.explicit,
             release_date: attr.release_date.clone(),
-            popularity: attr.popularity.clone(),
+            popularity: attr.popularity,
             access_type: attr.access_type.clone(),
             availability: attr.availability.clone(),
             media_tags: attr.media_tags.clone(),

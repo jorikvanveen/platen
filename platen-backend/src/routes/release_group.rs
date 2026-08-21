@@ -6,11 +6,10 @@ use axum::{
 };
 use reqwest::StatusCode;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, IntoActiveModel, ModelTrait,
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, ModelTrait,
     QueryFilter,
 };
-use sea_schema::sea_query::Expr;
-use tracing::{dispatcher::with_default, error, info};
+use tracing::{error, info};
 
 use crate::{AppState, services::downloaders::Downloader, entity};
 
