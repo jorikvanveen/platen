@@ -6,6 +6,8 @@
 
     let { data }: PageProps = $props();
 
+    // query is intentionally a local, mutable copy of the URL query param
+    // svelte-ignore state_referenced_locally
     let query = $state(data.query);
 
     function submit() {
