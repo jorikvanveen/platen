@@ -3,8 +3,8 @@ import type { Artist } from '$lib/dto/Artist';
 import type { PageLoad } from './$types';
 
 export const load: PageLoad = async ({ fetch }) => {
-  console.log(`${API_URL}/artist`);
-  const resp = await fetch(`${API_URL}/artist`);
+  console.log(`${API_URL}/artists`);
+  const resp = await fetch(`${API_URL}/artists`);
   if (!resp.ok) { 
     console.error(resp.status, await resp.text())
     throw new Error("Failed to fetch artists");

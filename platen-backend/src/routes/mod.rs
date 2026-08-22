@@ -1,5 +1,5 @@
+pub mod album;
 pub mod artist;
 pub mod jellyfin;
-pub mod mb;
-pub mod release_group;
+pub mod tidal;
 pub mod utils;

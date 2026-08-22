@@ -1,10 +1,9 @@
 use content_disposition::parse_content_disposition;
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, time::Duration};
 use tokio::{
     fs::{self, File},
     io::{self, AsyncWriteExt},
     process::Command,
-    sync::Mutex,
     time::sleep,
 };
 
@@ -13,11 +12,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Config,
-    services::{
-        downloaders::Downloader,
-        tidal::{Tidal, TidalError},
-    },
+    entity::album,
+    services::downloaders::Downloader,
 };
 
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
@@ -27,7 +23,6 @@ pub struct Antra {
     client: reqwest::Client,
     username: String,
     password: String,
-    tidal: Arc<Mutex<Tidal>>,
 }
 
 #[derive(Serialize)]
@@ -37,7 +32,7 @@ struct LoginRequestBody {
 }
 
 impl Antra {
-    pub fn new(config: &Config, tidal: Arc<Mutex<Tidal>>) -> Self {
+    pub fn new(config: &crate::Config) -> Self {
         Self {
             client: reqwest::ClientBuilder::new()
                 .cookie_store(true)
@@ -45,7 +40,6 @@ impl Antra {
                 .unwrap(),
             username: config.antra_username.clone(),
             password: config.antra_password.clone(),
-            tidal,
         }
     }
 
@@ -226,9 +220,6 @@ struct ResolveResponse {
 
 #[derive(Error, Debug)]
 pub enum AntraError {
-    #[error("Tidal error: {0}")]
-    Tidal(#[from] TidalError),
-
     #[error("The requested release could not be found")]
     NotFound,
 
@@ -257,18 +248,12 @@ pub enum AntraError {
 impl Downloader for Antra {
     type Error = AntraError;
 
-    async fn download_release_group(
+    async fn download_album(
         &self,
-        artist: &str,
-        release_title: &str,
+        album: &album::Model,
         destination: &std::path::Path,
     ) -> Result<(), Self::Error> {
-        tracing::info!("Downloading release group: {}", &release_title);
-        let release_query = format!("{artist} {}", release_title);
-        let albums = { self.tidal.lock().await.find_album(&release_query).await? };
-
-        let album = albums.first().ok_or(AntraError::NotFound)?;
-
+        tracing::info!("Downloading album: {}", album.title);
         let url = format!("https://tidal.com/browse/album/{}", album.id);
 
         let ResolveResponse { track_count, .. } = self.resolve(&url).await?;

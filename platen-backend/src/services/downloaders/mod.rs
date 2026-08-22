@@ -6,10 +6,9 @@ pub mod antra;
 
 pub trait Downloader {
     type Error: Error;
-    async fn download_release_group(
+    async fn download_album(
         &self,
-        artist: &str,
-        release_group: &str,
+        album: &crate::entity::album::Model,
         destination: &Path,
     ) -> Result<(), Self::Error>;
 }

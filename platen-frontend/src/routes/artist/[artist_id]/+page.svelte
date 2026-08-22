@@ -8,7 +8,7 @@
 
     async function download(id: string) {
       download_state[id] = "downloading";
-      const resp = await fetch(`${API_URL}/artist/${data.artist.musicbrainz_id}/release-group/${id}/download`, {
+      const resp = await fetch(`${API_URL}/artists/${data.artist.id}/albums/${id}/download`, {
         method: "POST"
       });
 
@@ -20,7 +20,7 @@
     }
 </script>
 <h1>{data.artist.name}</h1>
-<a href={"/artist/" + data.artist.musicbrainz_id + "/add-release-group?page=0"}>Add release group</a><br/><br/>
+<a href={"/artist/" + data.artist.id + "/add-album"}>Add album</a><br/><br/>
 
 <table>
     <thead>
@@ -31,14 +31,14 @@
         </tr>
     </thead>
     <tbody>
-        {#each data.release_groups as release_group}
+        {#each data.albums as album}
             <tr>
-                <td>{release_group.title}</td>
+                <td>{album.title}</td>
                 <td>
-                    {#if release_group.downloaded || download_state[release_group.musicbrainz_id] == "done"}
+                    {#if album.jellyfin_id != null || download_state[album.id] == "done"}
                         Downloaded
                     {:else}
-                        <button disabled={download_state[release_group.musicbrainz_id] == "downloading"} onclick={() => download(release_group.musicbrainz_id)}>Download</button>
+                        <button disabled={download_state[album.id] == "downloading"} onclick={() => download(album.id)}>Download</button>
                     {/if}
                 </td>
                 <td></td>

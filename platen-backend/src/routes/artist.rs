@@ -1,13 +1,12 @@
-use axum::extract::*;
+use axum::{
+    Json,
+    extract::{Path, State},
+};
 use reqwest::StatusCode;
 use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait};
 use tracing::{error, info};
 
-use crate::{
-    AppState,
-    entity::artist,
-    services::musicbrainz::RequestError,
-};
+use crate::{AppState, entity::artist, routes::utils};
 
 pub mod dto {
     use serde::{Deserialize, Serialize};
@@ -16,16 +15,18 @@ pub mod dto {
     #[derive(Debug, Serialize, Deserialize, TS)]
     #[ts(export)]
     pub struct Artist {
-        pub musicbrainz_id: String,
+        pub id: String,
         pub name: String,
+        pub musicbrainz_id: Option<String>,
     }
 }
 
 impl From<artist::Model> for dto::Artist {
     fn from(model: artist::Model) -> Self {
         dto::Artist {
-            musicbrainz_id: model.musicbrainz_id,
+            id: model.id,
             name: model.name,
+            musicbrainz_id: model.musicbrainz_id,
         }
     }
 }
@@ -47,30 +48,21 @@ pub async fn get(
     }
 }
 
-//#[instrument]
 #[axum::debug_handler]
 pub async fn create(
-    State(AppState {
-        musicbrainz, db, ..
-    }): State<AppState>,
+    State(AppState { tidal, db, .. }): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<dto::Artist>, StatusCode> {
     info!("Creating artist {id}");
-    let artist = musicbrainz.get_artist(&id).await.map_err(|e| match e {
-        RequestError::Reqwest(error) => {
-            error!("Reqwest: {error:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-        RequestError::MusicbrainzError(StatusCode::NOT_FOUND, _) => StatusCode::NOT_FOUND,
-        RequestError::MusicbrainzError(status, error) => {
-            error!("Musicbrainz: {status}: {error:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    })?;
+    let tidal_artist = {
+        let mut tidal = tidal.lock().await;
+        tidal.get_artist(&id).await.map_err(utils::map_tidal_error)?
+    };
 
     let artist_model = artist::ActiveModel {
-        musicbrainz_id: ActiveValue::Set(artist.id),
-        name: ActiveValue::Set(artist.name),
+        id: ActiveValue::Set(tidal_artist.id),
+        name: ActiveValue::Set(tidal_artist.name),
+        musicbrainz_id: ActiveValue::Set(None),
     };
 
     let result_model = artist_model.insert(&db).await.map_err(|e| {

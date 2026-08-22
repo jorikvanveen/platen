@@ -58,5 +58,5 @@
 
 <br/>
 {#each data.artists as artist}
-    <a href={"/artist/" + artist.musicbrainz_id}>{artist.name}</a><br/>
+    <a href={"/artist/" + artist.id}>{artist.name}</a><br/>
 {/each}

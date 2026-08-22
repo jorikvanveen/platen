@@ -4,15 +4,16 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq, Serialize, Deserialize)]
-#[sea_orm(table_name = "release_group")]
+#[sea_orm(table_name = "album")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
-    pub musicbrainz_id: String,
-    pub title: String,
+    pub id: String,
     pub artist_id: String,
-    pub r#type: String,
-    pub downloaded: bool,
+    pub title: String,
+    pub album_type: Option<String>,
     pub jellyfin_id: Option<String>,
+    pub musicbrainz_id: Option<String>,
+    pub match_method: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -20,7 +21,7 @@ pub enum Relation {
     #[sea_orm(
         belongs_to = "super::artist::Entity",
         from = "Column::ArtistId",
-        to = "super::artist::Column::MusicbrainzId",
+        to = "super::artist::Column::Id",
         on_update = "Cascade",
         on_delete = "Cascade"
     )]

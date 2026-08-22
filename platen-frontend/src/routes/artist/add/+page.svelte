@@ -1,7 +1,6 @@
 <script lang="ts">
     import { goto } from "$app/navigation";
     import { API_URL } from "$lib/constants";
-    import Pagination from "$lib/components/Pagination.svelte";
     import type { PageProps } from "./$types";
 
     let { data }: PageProps = $props();
@@ -11,11 +10,11 @@
     let query = $state(data.query);
 
     function submit() {
-      goto(`/artist/add?q=${encodeURIComponent(query)}&page=0`);
+      goto(`/artist/add?q=${encodeURIComponent(query)}`);
     }
 
     async function addArtist(id: string) {
-      const resp = await fetch(`${API_URL}/artist/${id}`, {
+      const resp = await fetch(`${API_URL}/artists/${id}`, {
         method: "POST",
       })
 
@@ -42,8 +41,7 @@
             <thead>
                 <tr>
                     <th>Name</th>
-                    <th>Country</th>
-                    <th>Disambiguation</th>
+                    <th></th>
                 </tr>
             </thead>
             <tbody>
@@ -51,17 +49,10 @@
                 <tr>
                     <!-- svelte-ignore a11y_invalid_attribute -->
                     <td><a onclick={() => addArtist(result.id)} href="#">{result.name}</a></td>
-                    <td>{result.country || ""}</td>
-                    <td>{result.disambiguation || ""}</td>
+                    <td></td>
                 </tr>
             {/each}
             </tbody>
         </table>
-        <br/>
-        <Pagination
-            page={data.page}
-            pages={data.pages}
-            hrefForPage={(n) => `/artist/add?q=${encodeURIComponent(data.query)}&page=${n}`}
-        />
     {/if}
 {/if}

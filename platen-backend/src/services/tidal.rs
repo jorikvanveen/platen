@@ -5,7 +5,11 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::time::sleep;
 
-use tidal_response::{AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData};
+use tidal_response::{
+    AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,
+    ArtistSingleResource, AlbumSingleResource,
+    ArtistWithAlbumsDocument, AlbumWithArtistsDocument, ArtistSearchDocument,
+};
 
 static TIDAL_BASE_URL: &str = "https://openapi.tidal.com/v2";
 
@@ -166,6 +170,189 @@ impl Tidal {
             })
             .collect()
     }
+
+    /// `GET /artists/{id}` -> single artist resource.
+    pub async fn get_artist(&mut self, id: &str) -> Result<TidalArtist, TidalError> {
+        let url = format!("{TIDAL_BASE_URL}/artists/{id}");
+        let resp = self.send_with_retry(self.client.get(url)).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let doc: ArtistSingleResource = resp.json().await?;
+        let resource = doc.data.ok_or(TidalError::UnexpectedResponse)?;
+        Ok(TidalArtist {
+            id: resource.id,
+            name: resource.attributes.name,
+        })
+    }
+
+    /// `GET /albums/{id}` -> single album resource.
+    pub async fn get_album(&mut self, id: &str) -> Result<TidalAlbum, TidalError> {
+        let url = format!("{TIDAL_BASE_URL}/albums/{id}");
+        let resp = self.send_with_retry(self.client.get(url)).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let doc: AlbumSingleResource = resp.json().await?;
+        let resource = doc.data.ok_or(TidalError::UnexpectedResponse)?;
+        Ok(TidalAlbum::from(resource.id, resource.attributes))
+    }
+
+    /// `GET /artists/{id}?include=albums` -> artist with their albums.
+    pub async fn get_artist_albums(
+        &mut self,
+        id: &str,
+    ) -> Result<Vec<TidalAlbum>, TidalError> {
+        let url = format!("{TIDAL_BASE_URL}/artists/{id}?include=albums");
+        let resp = self.send_with_retry(self.client.get(url)).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let doc: ArtistWithAlbumsDocument = resp.json().await?;
+        let artist = doc.data.ok_or(TidalError::UnexpectedResponse)?;
+
+        let relationships = artist
+            .relationships
+            .and_then(|r| r.albums)
+            .ok_or(TidalError::UnexpectedResponse)?;
+
+        relationships
+            .data
+            .iter()
+            .map(|rel| {
+                doc.included
+                    .iter()
+                    .find(|inc| inc.id == rel.id)
+                    .ok_or(TidalError::UnexpectedResponse)
+                    .map(|inc| TidalAlbum::from(inc.id.clone(), inc.attributes.clone()))
+            })
+            .collect()
+    }
+
+    /// `GET /albums/{id}?include=artists` -> album with its artists.
+    pub async fn get_album_artists(
+        &mut self,
+        id: &str,
+    ) -> Result<Vec<TidalArtist>, TidalError> {
+        let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=artists");
+        let resp = self.send_with_retry(self.client.get(url)).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let doc: AlbumWithArtistsDocument = resp.json().await?;
+        let album = doc.data.ok_or(TidalError::UnexpectedResponse)?;
+
+        let relationships = album
+            .relationships
+            .and_then(|r| r.artists)
+            .ok_or(TidalError::UnexpectedResponse)?;
+
+        relationships
+            .data
+            .iter()
+            .map(|rel| {
+                doc.included
+                    .iter()
+                    .find(|inc| inc.id == rel.id)
+                    .ok_or(TidalError::UnexpectedResponse)
+                    .map(|inc| TidalArtist {
+                        id: inc.id.clone(),
+                        name: inc.attributes.name.clone(),
+                    })
+            })
+            .collect()
+    }
+
+    /// `GET /searchResults?filter[query]=...&include=artists` -> artist search.
+    pub async fn search_artists(
+        &mut self,
+        query: &str,
+    ) -> Result<Vec<TidalArtist>, TidalError> {
+        let encoded = urlencoding::encode(query);
+        let url =
+            format!("{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists");
+
+        let resp = self.send_with_retry(self.client.get(url)).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let doc: ArtistSearchDocument = resp.json().await?;
+        let search = doc.data.first().ok_or(TidalError::UnexpectedResponse)?;
+
+        let relationships = search
+            .relationships
+            .as_ref()
+            .and_then(|r| r.artists.as_ref())
+            .ok_or(TidalError::UnexpectedResponse)?;
+
+        relationships
+            .data
+            .iter()
+            .map(|rel| {
+                doc.included
+                    .iter()
+                    .find(|inc| inc.id == rel.id)
+                    .ok_or(TidalError::UnexpectedResponse)
+                    .map(|inc| TidalArtist {
+                        id: inc.id.clone(),
+                        name: inc.attributes.name.clone(),
+                    })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TidalArtist {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TidalAlbum {
+    pub id: String,
+    pub title: String,
+    pub album_type: Option<String>,
+    pub release_date: Option<String>,
+    pub barcode_id: Option<String>,
+    pub number_of_volumes: Option<u32>,
+    pub number_of_items: Option<u32>,
+    pub duration: String,
+    pub explicit: bool,
+    pub popularity: f64,
+    pub availability: Option<Vec<String>>,
+    pub media_tags: Option<Vec<String>>,
+    pub r#type: String,
+}
+
+impl TidalAlbum {
+    fn from(id: String, attr: AlbumSearchIncludedAttributes) -> Self {
+        TidalAlbum {
+            id,
+            title: attr.title,
+            album_type: attr.album_type,
+            release_date: attr.release_date,
+            barcode_id: attr.barcode_id,
+            number_of_volumes: attr.number_of_volumes,
+            number_of_items: attr.number_of_items,
+            duration: attr.duration,
+            explicit: attr.explicit,
+            popularity: attr.popularity,
+            availability: attr.availability,
+            media_tags: attr.media_tags,
+            r#type: attr.r#type,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -179,14 +366,12 @@ pub struct ResolvedTidalSearchedAlbum {
     pub duration: String, // ISO 8601
     pub explicit: bool,
     pub release_date: Option<String>, // 2022-04-20
-    //copyright
     pub popularity: f64,
     pub access_type: Option<String>,
-    pub availability: Vec<String>,
+    pub availability: Option<Vec<String>>,
     pub media_tags: Option<Vec<String>>,
-    //externalLinks,
     pub r#type: String,
-    pub album_type: Option<String>, // EP, Single, Album
+    pub album_type: Option<String>,
 }
 
 impl
@@ -241,7 +426,6 @@ mod tidal_response {
     pub struct AlbumSearchData {
         pub id: String,
         pub r#type: String,
-        //attributes; {query, trackingId}
         pub relationships: AlbumSearchRelationships,
     }
 
@@ -269,7 +453,7 @@ mod tidal_response {
         pub r#type: String,
         pub attributes: AlbumSearchIncludedAttributes,
     }
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Clone)]
     #[serde(rename = "camelCase")]
     pub struct AlbumSearchIncludedAttributes {
         pub title: String,
@@ -279,13 +463,113 @@ mod tidal_response {
         pub duration: String, // ISO 8601
         pub explicit: bool,
         pub release_date: Option<String>, // 2022-04-20
-        //copyright
         pub popularity: f64,
         pub access_type: Option<String>,
-        pub availability: Vec<String>,
+        pub availability: Option<Vec<String>>,
         pub media_tags: Option<Vec<String>>,
-        //externalLinks,
         pub r#type: String,
-        pub album_type: Option<String>, // EP, Single, Album
+        pub album_type: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistSingleResource {
+        pub data: Option<ArtistResource>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistResource {
+        pub id: String,
+        pub r#type: String,
+        pub attributes: ArtistIncludedAttributes,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct AlbumSingleResource {
+        pub data: Option<AlbumResource>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct AlbumResource {
+        pub id: String,
+        pub r#type: String,
+        pub attributes: AlbumSearchIncludedAttributes,
+    }
+
+    // ---- Compound documents (include=...) ----
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistWithAlbumsDocument {
+        pub data: Option<ArtistWithAlbumsResource>,
+        #[serde(default)]
+        pub included: Vec<AlbumSearchIncluded>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistWithAlbumsResource {
+        pub id: String,
+        pub r#type: String,
+        pub attributes: ArtistIncludedAttributes,
+        pub relationships: Option<ArtistWithAlbumsRelationships>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistWithAlbumsRelationships {
+        pub albums: Option<AlbumSearchRelationshipsAlbums>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct AlbumWithArtistsDocument {
+        pub data: Option<AlbumWithArtistsResource>,
+        #[serde(default)]
+        pub included: Vec<ArtistIncluded>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct AlbumWithArtistsResource {
+        pub id: String,
+        pub r#type: String,
+        pub attributes: AlbumSearchIncludedAttributes,
+        pub relationships: Option<AlbumWithArtistsRelationships>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct AlbumWithArtistsRelationships {
+        pub artists: Option<AlbumSearchRelationshipsAlbums>,
+    }
+
+    // ---- Artist search ----
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistSearchDocument {
+        pub data: Vec<ArtistSearchData>,
+        #[serde(default)]
+        pub included: Vec<ArtistIncluded>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    pub struct ArtistSearchData {
+        pub id: String,
+        pub r#type: String,
+        pub relationships: Option<ArtistSearchRelationships>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistSearchRelationships {
+        pub artists: Option<AlbumSearchRelationshipsAlbums>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
+    pub struct ArtistIncluded {
+        pub id: String,
+        pub r#type: String,
+        pub attributes: ArtistIncludedAttributes,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    #[serde(rename = "camelCase")]
+    pub struct ArtistIncludedAttributes {
+        pub name: String,
     }
 }

@@ -2,5 +2,5 @@
 
 pub mod prelude;
 
+pub mod album;
 pub mod artist;
-pub mod release_group;

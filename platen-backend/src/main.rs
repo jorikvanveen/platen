@@ -55,7 +55,7 @@ async fn main() -> color_eyre::Result<()> {
     )));
     tidal.lock().await.login().await?;
 
-    let antra = Antra::new(&config, tidal.clone());
+    let antra = Antra::new(&config);
     antra.login().await?;
 
     let musicbrainz = Musicbrainz::new();
@@ -73,32 +73,26 @@ async fn main() -> color_eyre::Result<()> {
     let state = AppState {
         musicbrainz,
         jellyfin,
+        tidal,
+        antra,
         db,
         config,
-        antra,
     };
     let app = Router::new()
-        .route("/artist", get(routes::artist::list))
-        .route("/artist/{id}", get(routes::artist::get))
-        .route("/artist/{id}", post(routes::artist::create))
+        .route("/artists", get(routes::artist::list))
+        .route("/artists/{id}", get(routes::artist::get))
+        .route("/artists/{id}", post(routes::artist::create))
         .route(
-            "/artist/{artist_id}/release-group/{release_group_id}",
-            post(routes::release_group::create),
+            "/artists/{artist_id}/albums/{album_id}",
+            post(routes::album::create),
         )
+        .route("/artists/{artist_id}/albums", get(routes::album::fetch_all))
         .route(
-            "/artist/{artist_id}/release-groups",
-            get(routes::release_group::fetch_all),
+            "/artists/{artist_id}/albums/{album_id}/download",
+            post(routes::album::download),
         )
-        .route(
-            "/artist/{artist_id}/release-group/{release_group_id}/download",
-            post(routes::release_group::download),
-        )
-        .route("/mb/search_artist/{query}", get(routes::mb::search_artist))
-        .route("/mb/artist/{artist_id}", get(routes::mb::get_artist))
-        .route(
-            "/mb/artist/{artist_id}/release-groups",
-            get(routes::mb::get_artist_release_groups),
-        )
+        .route("/tidal/search/artists", get(routes::tidal::search_artists))
+        .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))
         .route("/jellyfin/import", post(routes::jellyfin::import))
         .route("/", get(|| async { "Hello world" }))
         .with_state(state);
@@ -113,6 +107,7 @@ async fn main() -> color_eyre::Result<()> {
 struct AppState {
     musicbrainz: Musicbrainz,
     jellyfin: Jellyfin,
+    tidal: Arc<Mutex<Tidal>>,
     antra: Antra,
     db: DatabaseConnection,
     config: Config,

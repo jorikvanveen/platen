@@ -7,19 +7,20 @@ use serde::{Deserialize, Serialize};
 #[sea_orm(table_name = "artist")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
-    pub musicbrainz_id: String,
+    pub id: String,
     pub name: String,
+    pub musicbrainz_id: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(has_many = "super::release_group::Entity")]
-    ReleaseGroup,
+    #[sea_orm(has_many = "super::album::Entity")]
+    Album,
 }
 
-impl Related<super::release_group::Entity> for Entity {
+impl Related<super::album::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::ReleaseGroup.def()
+        Relation::Album.def()
     }
 }
 

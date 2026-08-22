@@ -6,14 +6,25 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // Replace the sample below with your own migration scripts
         manager
             .create_table(
                 Table::create()
                     .table(Artist::Table)
                     .if_not_exists()
-                    .col(string(Artist::MusicbrainzId).primary_key())
+                    .col(string(Artist::Id).primary_key())
                     .col(string(Artist::Name))
+                    .col(string_null(Artist::MusicbrainzId))
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("artist-musicbrainz-id-idx")
+                    .table(Artist::Table)
+                    .col(Artist::MusicbrainzId)
                     .to_owned(),
             )
             .await?;
@@ -21,21 +32,34 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(ReleaseGroup::Table)
+                    .table(Album::Table)
                     .if_not_exists()
-                    .col(string(ReleaseGroup::MusicbrainzId).primary_key())
-                    .col(string(ReleaseGroup::Title))
-                    .col(string(ReleaseGroup::ArtistId))
-                    .col(string(ReleaseGroup::Type))
-                    .col(boolean(ReleaseGroup::Downloaded))
+                    .col(string(Album::Id).primary_key())
+                    .col(string(Album::ArtistId))
+                    .col(string(Album::Title))
+                    .col(string_null(Album::AlbumType))
+                    .col(string_null(Album::JellyfinId))
+                    .col(string_null(Album::MusicbrainzId))
+                    .col(string_null(Album::MatchMethod))
                     .foreign_key(
                         ForeignKey::create()
-                            .name("artist-release-group-fk")
-                            .from(ReleaseGroup::Table, ReleaseGroup::ArtistId)
-                            .to(Artist::Table, Artist::MusicbrainzId)
+                            .name("fk-album-artist-id")
+                            .from(Album::Table, Album::ArtistId)
+                            .to(Artist::Table, Artist::Id)
                             .on_delete(Cascade)
                             .on_update(Cascade),
                     )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("album-musicbrainz-id-idx")
+                    .table(Album::Table)
+                    .col(Album::MusicbrainzId)
                     .to_owned(),
             )
             .await?;
@@ -44,32 +68,32 @@ impl MigrationTrait for Migration {
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // Replace the sample below with your own migration scripts
+        manager
+            .drop_table(Table::drop().table(Album::Table).to_owned())
+            .await?;
         manager
             .drop_table(Table::drop().table(Artist::Table).to_owned())
             .await?;
-
-        manager
-            .drop_table(Table::drop().table(ReleaseGroup::Table).to_owned())
-            .await?;
-
         Ok(())
     }
 }
 
-#[derive(DeriveIden)]
+#[derive(Iden)]
 enum Artist {
     Table,
-    MusicbrainzId,
+    Id,
     Name,
+    MusicbrainzId,
 }
 
-#[derive(DeriveIden)]
-enum ReleaseGroup {
+#[derive(Iden)]
+enum Album {
     Table,
-    MusicbrainzId,
-    Title,
+    Id,
     ArtistId,
-    Type,
-    Downloaded,
+    Title,
+    AlbumType,
+    JellyfinId,
+    MusicbrainzId,
+    MatchMethod,
 }
