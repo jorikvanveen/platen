@@ -1,17 +1,7 @@
 import { API_URL } from "$lib/constants";
+import type { Artist } from "$lib/dto/Artist";
+import type { ReleaseGroup } from "$lib/dto/ReleaseGroup";
 import type { PageLoad } from "./$types";
-
-export type Artist = {
-  musicbrainz_id: string,
-  name: string
-}
-
-export type ReleaseGroup = {
-  musicbrainz_id: string,
-  title: string,
-  artist_id: string,
-  downloaded: boolean
-}
 
 export const load: PageLoad = async ({ fetch, params }) => {
   const artist_req = fetch(`${API_URL}/artist/${params.artist_id}`);

@@ -1,7 +1,6 @@
 use axum::{Json, extract::State};
 use reqwest::StatusCode;
 use sea_orm::{ActiveModelTrait, ActiveValue::Set, EntityTrait};
-use serde::Serialize;
 use tracing::{error, info, warn};
 
 use crate::{
@@ -26,25 +25,32 @@ impl From<JellyfinError> for StatusCode {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct ImportFailure {
-    pub name: String,
-    pub reason: String,
-}
+pub mod dto {
+    use serde::Serialize;
+    use ts_rs::TS;
 
-#[derive(Debug, Serialize)]
-pub struct ImportSummary {
-    pub total_scanned: u32,
-    pub created: u32,
-    pub linked: u32,
-    pub skipped: u32,
-    pub failed: u32,
-    pub failures: Vec<ImportFailure>,
+    #[derive(Debug, Serialize, TS)]
+    #[ts(export)]
+    pub struct ImportFailure {
+        pub name: String,
+        pub reason: String,
+    }
+
+    #[derive(Debug, Serialize, TS)]
+    #[ts(export)]
+    pub struct ImportSummary {
+        pub total_scanned: u32,
+        pub created: u32,
+        pub linked: u32,
+        pub skipped: u32,
+        pub failed: u32,
+        pub failures: Vec<ImportFailure>,
+    }
 }
 
 pub async fn import(
     State(AppState { musicbrainz, jellyfin, db, .. }): State<AppState>,
-) -> Result<Json<ImportSummary>, StatusCode> {
+) -> Result<Json<dto::ImportSummary>, StatusCode> {
     info!("Starting Jellyfin import");
 
     let albums = jellyfin.list_albums().await?;
@@ -63,7 +69,7 @@ pub async fn import(
             Err(reason) => {
                 warn!("Jellyfin import failure for {}: {reason}", album.name);
                 failed += 1;
-                failures.push(ImportFailure {
+                failures.push(dto::ImportFailure {
                     name: album.name.clone(),
                     reason,
                 });
@@ -71,7 +77,7 @@ pub async fn import(
         }
     }
 
-    Ok(Json(ImportSummary {
+    Ok(Json(dto::ImportSummary {
         total_scanned: albums.len() as u32,
         created,
         linked,

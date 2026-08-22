@@ -1,17 +1,6 @@
 import { API_URL, PAGE_SIZE } from "$lib/constants";
+import type { ArtistSearchResponse } from "$lib/dto/ArtistSearchResponse";
 import type { PageLoad } from "./$types";
-
-export type Artist = {
-  id: string,
-  name: string,
-  country: string | null,
-  disambiguation: string | null
-}
-
-export type ArtistSearchResp = {
-  artist_count: number,
-  artists: Artist[]
-}
 
 export const load: PageLoad = async ({ fetch, url }) => {
   const q = url.searchParams.get("q") ?? "";
@@ -27,7 +16,7 @@ export const load: PageLoad = async ({ fetch, url }) => {
   }
 
   const resp = await fetch(`${API_URL}/mb/search_artist/${encodeURIComponent(q)}?page=${page}`);
-  const body: ArtistSearchResp = await resp.json();
+  const body: ArtistSearchResponse = await resp.json();
   return {
     query: q,
     page,

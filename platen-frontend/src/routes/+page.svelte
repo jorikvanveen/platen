@@ -1,14 +1,9 @@
 <script lang="ts">
-    import type { PageProps } from "./$types";
     import { API_URL } from "$lib/constants";
+    import type { ImportSummary } from "$lib/dto/ImportSummary";
+    import type { PageProps } from "./$types";
 
     let { data }: PageProps = $props();
-
-    type ImportFailure = { name: string; reason: string };
-    type ImportSummary = {
-        total_scanned: number; created: number; linked: number;
-        skipped: number; failed: number; failures: ImportFailure[];
-    };
 
     let importing = $state(false);
     let summary = $state<ImportSummary | null>(null);

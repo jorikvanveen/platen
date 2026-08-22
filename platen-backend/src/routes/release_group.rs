@@ -8,14 +8,48 @@ use reqwest::StatusCode;
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, ModelTrait, QueryFilter};
 use tracing::{error, info};
 
-use crate::{AppState, entity, services::downloaders::Downloader};
+use crate::{
+    AppState,
+    entity::{self, release_group},
+    services::downloaders::Downloader,
+};
+
+pub mod dto {
+    use serde::{Deserialize, Serialize};
+    use ts_rs::TS;
+
+    #[derive(Debug, Serialize, Deserialize, TS)]
+    #[ts(export)]
+    pub struct ReleaseGroup {
+        pub musicbrainz_id: String,
+        pub title: String,
+        pub artist_id: String,
+        #[ts(rename = "type")]
+        pub r#type: String,
+        pub downloaded: bool,
+        pub jellyfin_id: Option<String>,
+    }
+}
+
+impl From<release_group::Model> for dto::ReleaseGroup {
+    fn from(model: release_group::Model) -> Self {
+        dto::ReleaseGroup {
+            musicbrainz_id: model.musicbrainz_id,
+            title: model.title,
+            artist_id: model.artist_id,
+            r#type: model.r#type,
+            downloaded: model.downloaded,
+            jellyfin_id: model.jellyfin_id,
+        }
+    }
+}
 
 pub async fn create(
     State(AppState {
         musicbrainz, db, ..
     }): State<AppState>,
     Path((artist_id, release_group_id)): Path<(String, String)>,
-) -> Result<Json<entity::release_group::Model>, StatusCode> {
+) -> Result<Json<dto::ReleaseGroup>, StatusCode> {
     info!("Creating release group {release_group_id} on artist {artist_id}");
     let group = musicbrainz
         .get_release_group(&release_group_id)
@@ -50,13 +84,13 @@ pub async fn create(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    Ok(Json(model))
+    Ok(Json(model.into()))
 }
 
 pub async fn fetch_all(
     State(AppState { db, .. }): State<AppState>,
     Path(artist_id): Path<String>,
-) -> Result<Json<Vec<entity::release_group::Model>>, StatusCode> {
+) -> Result<Json<Vec<dto::ReleaseGroup>>, StatusCode> {
     let artist = entity::artist::Entity::find_by_id(&artist_id)
         .one(&db)
         .await
@@ -76,7 +110,7 @@ pub async fn fetch_all(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    Ok(Json(release_groups))
+    Ok(Json(release_groups.into_iter().map(Into::into).collect()))
 }
 
 pub async fn download(
