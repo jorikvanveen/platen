@@ -8,7 +8,7 @@ use tokio::time::sleep;
 use tidal_response::{
     AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,
     ArtistSingleResource, AlbumSingleResource,
-    ArtistWithAlbumsDocument, AlbumWithArtistsDocument, ArtistSearchDocument,
+    ArtistAlbumsRelationshipDocument, AlbumWithArtistsDocument, ArtistSearchDocument,
 };
 
 static TIDAL_BASE_URL: &str = "https://openapi.tidal.com/v2";
@@ -202,37 +202,53 @@ impl Tidal {
         Ok(TidalAlbum::from(resource.id, resource.attributes))
     }
 
-    /// `GET /artists/{id}?include=albums` -> artist with their albums.
+    /// Exhausts `GET /artists/{id}/relationships/albums?include=albums` across
+    /// Tidal's cursor pages, returning the full set of albums.
+    ///
+    /// `GET /artists/{id}?include=albums` exposes no paging parameter, so it only
+    /// returns Tidal's default first page. The relationship endpoint pages via
+    /// `links.next` (a relative path carrying an opaque `page[cursor]`). The loop
+    /// follows `links.next` until it is absent, or after `MAX_PAGES` requests as
+    /// a safety cap.
     pub async fn get_artist_albums(
         &mut self,
         id: &str,
     ) -> Result<Vec<TidalAlbum>, TidalError> {
-        let url = format!("{TIDAL_BASE_URL}/artists/{id}?include=albums");
-        let resp = self.send_with_retry(self.client.get(url)).await?;
-        if !resp.status().is_success() {
-            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
-            return Err(TidalError::UnexpectedResponse);
+        const MAX_PAGES: usize = 50;
+        let mut albums: Vec<TidalAlbum> = Vec::new();
+        let mut next: Option<String> = None;
+
+        for page in 0..MAX_PAGES {
+            let url = match &next {
+                Some(rel) => format!("{TIDAL_BASE_URL}{rel}"),
+                None => format!(
+                    "{TIDAL_BASE_URL}/artists/{id}/relationships/albums?include=albums"
+                ),
+            };
+            let resp = self.send_with_retry(self.client.get(url)).await?;
+            if !resp.status().is_success() {
+                tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+                return Err(TidalError::UnexpectedResponse);
+            }
+
+            let doc: ArtistAlbumsRelationshipDocument = resp.json().await?;
+            for inc in &doc.included {
+                albums.push(TidalAlbum::from(inc.id.clone(), inc.attributes.clone()));
+            }
+
+            next = doc.links.and_then(|l| l.next);
+            if next.is_none() {
+                return Ok(albums);
+            }
+            tracing::debug!("tidal: fetching artist {id} albums page {}", page + 1);
         }
 
-        let doc: ArtistWithAlbumsDocument = resp.json().await?;
-        let artist = doc.data.ok_or(TidalError::UnexpectedResponse)?;
-
-        let relationships = artist
-            .relationships
-            .and_then(|r| r.albums)
-            .ok_or(TidalError::UnexpectedResponse)?;
-
-        relationships
-            .data
-            .iter()
-            .map(|rel| {
-                doc.included
-                    .iter()
-                    .find(|inc| inc.id == rel.id)
-                    .ok_or(TidalError::UnexpectedResponse)
-                    .map(|inc| TidalAlbum::from(inc.id.clone(), inc.attributes.clone()))
-            })
-            .collect()
+        tracing::warn!(
+            "tidal: hit max pages ({MAX_PAGES}) exhausting artist {id} albums; \
+             returning {} albums",
+            albums.len()
+        );
+        Ok(albums)
     }
 
     /// `GET /albums/{id}?include=artists` -> album with its artists.
@@ -497,24 +513,25 @@ mod tidal_response {
 
     // ---- Compound documents (include=...) ----
 
+    /// `GET /artists/{id}/relationships/albums?include=albums` response: the
+    /// `data` array holds album resource identifiers, `included` holds the full
+    /// album resources, and `links.next` is the relative path to the next cursor
+    /// page (absent on the last page).
     #[derive(Debug, Deserialize)]
-    pub struct ArtistWithAlbumsDocument {
-        pub data: Option<ArtistWithAlbumsResource>,
+    #[allow(dead_code)]
+    pub struct ArtistAlbumsRelationshipDocument {
+        #[serde(default)]
+        pub data: Vec<AlbumSearchRelationshipsAlbumsData>,
         #[serde(default)]
         pub included: Vec<AlbumSearchIncluded>,
+        #[serde(default)]
+        pub links: Option<Links>,
     }
 
-    #[derive(Debug, Deserialize)]
-    pub struct ArtistWithAlbumsResource {
-        pub id: String,
-        pub r#type: String,
-        pub attributes: ArtistIncludedAttributes,
-        pub relationships: Option<ArtistWithAlbumsRelationships>,
-    }
-
-    #[derive(Debug, Deserialize)]
-    pub struct ArtistWithAlbumsRelationships {
-        pub albums: Option<AlbumSearchRelationshipsAlbums>,
+    #[derive(Debug, Deserialize, Default)]
+    #[serde(default)]
+    pub struct Links {
+        pub next: Option<String>,
     }
 
     #[derive(Debug, Deserialize)]
