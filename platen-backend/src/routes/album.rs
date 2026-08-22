@@ -51,6 +51,17 @@ pub async fn create(
     Path((artist_id, album_id)): Path<(String, String)>,
 ) -> Result<Json<dto::Album>, StatusCode> {
     info!("Creating album {album_id} on artist {artist_id}");
+    if let Some(existing) = album::Entity::find_by_id(&album_id)
+        .one(&db)
+        .await
+        .map_err(|e| {
+            error!("Db error: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+    {
+        return Ok(Json(existing.into()));
+    }
+
     let tidal_album = {
         let mut tidal = tidal.lock().await;
         tidal.get_album(&album_id).await.map_err(crate::routes::utils::map_tidal_error)?

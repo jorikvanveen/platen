@@ -14,6 +14,10 @@
         added_ids.push(id);
       }
     }
+
+    function isAdded(id: string): boolean {
+      return data.existing_album_ids.includes(id) || added_ids.includes(id);
+    }
 </script>
 
 <h1>{data.artist.name}</h1>
@@ -38,7 +42,7 @@
                     <td>{album.release_date || ""}</td>
                     <td>{album.album_type || ""}</td>
                     <td>
-                        {#if !added_ids.includes(album.id)}
+                        {#if !isAdded(album.id)}
                             <button onclick={() => addAlbum(album.id)}>Add</button>
                         {/if}
                     </td>
