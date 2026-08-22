@@ -28,6 +28,7 @@ pub mod dto {
         pub title: String,
         pub album_type: Option<String>,
         pub release_date: Option<String>,
+        pub popularity: f64,
     }
 }
 
@@ -47,6 +48,7 @@ impl From<crate::services::tidal::TidalAlbum> for dto::TidalAlbum {
             title: a.title,
             album_type: a.album_type,
             release_date: a.release_date,
+            popularity: a.popularity,
         }
     }
 }
