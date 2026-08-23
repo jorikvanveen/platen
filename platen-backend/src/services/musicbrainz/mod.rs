@@ -5,7 +5,6 @@ use tracing::{debug, instrument};
 
 use crate::services::downloaders::RateLimit;
 
-pub mod artist;
 pub mod release_group;
 
 static BASE_URL: &str = "https://musicbrainz.org/ws/2";

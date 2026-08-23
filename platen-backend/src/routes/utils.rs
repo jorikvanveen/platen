@@ -1,13 +1,7 @@
 use reqwest::StatusCode;
-use serde::Deserialize;
 use tracing::error;
 
 use crate::services::tidal::TidalError;
-
-#[derive(Debug, Deserialize)]
-pub struct Pagination {
-    pub page: usize,
-}
 
 pub(crate) fn map_tidal_error(e: TidalError) -> StatusCode {
     match e {

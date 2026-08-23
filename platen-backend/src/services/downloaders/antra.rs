@@ -219,6 +219,7 @@ struct ResolveResponse {
 }
 
 #[derive(Error, Debug)]
+#[allow(unused)]
 pub enum AntraError {
     #[error("The requested release could not be found")]
     NotFound,

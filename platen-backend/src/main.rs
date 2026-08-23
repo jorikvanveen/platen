@@ -20,6 +20,7 @@ use crate::services::{
     tidal::Tidal,
 };
 
+#[allow(unused)]
 mod entity;
 mod routes;
 mod services;

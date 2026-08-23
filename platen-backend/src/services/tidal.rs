@@ -335,6 +335,7 @@ pub struct TidalArtist {
 }
 
 #[derive(Debug, Clone)]
+#[allow(unused)]
 pub struct TidalAlbum {
     pub id: String,
     pub title: String,
