@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize};
 use tracing::instrument;
 
 use super::{BASE_URL, RequestError};
@@ -45,34 +45,8 @@ pub struct ArtistCredit {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all(deserialize = "kebab-case"))]
+#[allow(unused)]
 pub struct ArtistCreditArtist {
     pub id: String,
     pub name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all(deserialize = "kebab-case"))]
-pub struct Alias {
-    pub name: Option<String>,
-    pub sort_name: Option<String>,
-    pub locale: Option<String>,
-    #[serde(rename(deserialize = "type"))]
-    pub alias_type: Option<String>,
-    pub type_id: Option<String>,
-    pub primary: Option<bool>,
-    pub begin: Option<String>,
-    pub end: Option<String>,
-    pub ended: Option<bool>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all(deserialize = "kebab-case"))]
-pub struct Area {
-    pub id: String,
-    pub name: String,
-    pub sort_name: Option<String>,
-    pub disambiguation: Option<String>,
-    #[serde(rename(deserialize = "type"))]
-    pub area_type: Option<String>,
-    pub type_id: Option<String>,
 }

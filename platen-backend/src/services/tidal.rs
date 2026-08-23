@@ -494,6 +494,7 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(unused)]
     pub struct ArtistResource {
         pub id: String,
         pub r#type: String,
@@ -506,6 +507,7 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(unused)]
     pub struct AlbumResource {
         pub id: String,
         pub r#type: String,
@@ -543,6 +545,7 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(unused)]
     pub struct AlbumWithArtistsResource {
         pub id: String,
         pub r#type: String,
