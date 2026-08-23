@@ -111,7 +111,7 @@
                                             <tr>
                                                 <td>{album.title}</td>
                                                 <td>{album.release_date || ""}</td>
-                                                <td>{album.album_type || ""}</td>
+                                                <td>{album.type || ""}</td>
                                             </tr>
                                         {/each}
                                     </tbody>

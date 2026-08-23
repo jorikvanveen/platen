@@ -40,7 +40,7 @@
                 <tr>
                     <td>{album.title}</td>
                     <td>{album.release_date || ""}</td>
-                    <td>{album.album_type || ""}</td>
+                    <td>{album.type || ""}</td>
                     <td>
                         {#if !isAdded(album.id)}
                             <button onclick={() => addAlbum(album.id)}>Add</button>
