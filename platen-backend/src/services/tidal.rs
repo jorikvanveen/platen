@@ -467,7 +467,7 @@ mod tidal_response {
         pub attributes: AlbumSearchIncludedAttributes,
     }
     #[derive(Debug, Deserialize, Clone)]
-    #[serde(rename = "camelCase")]
+    #[serde(rename_all = "camelCase")]
     pub struct AlbumSearchIncludedAttributes {
         pub title: String,
         pub barcode_id: Option<String>,
@@ -584,8 +584,136 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize, Clone)]
-    #[serde(rename = "camelCase")]
+    #[serde(rename_all = "camelCase")]
     pub struct ArtistIncludedAttributes {
         pub name: String,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tidal_response::{
+        AlbumSearchIncludedAttributes, ArtistAlbumsRelationshipDocument,
+    };
+
+    /// Regression: `AlbumSearchIncludedAttributes` used `#[serde(rename =
+    /// "camelCase")]`, which renames the type, not the fields. Serde looked for
+    /// `release_date` in the JSON while Tidal sends `releaseDate`, so every
+    /// snake_case field silently deserialized to `None`. The fix is `rename_all`.
+    /// This test pins the camelCase field names Tidal actually sends.
+    #[test]
+    fn deserializes_camel_case_attributes() {
+        let json = r#"
+            {
+              "title": "Michelle (Take 1)",
+              "barcodeId": "00881061189336",
+              "numberOfVolumes": 1,
+              "numberOfItems": 1,
+              "duration": "PT3M17S",
+              "explicit": false,
+              "releaseDate": "2026-07-29",
+              "popularity": 0.7160302460678571,
+              "accessType": "PUBLIC",
+              "availability": ["STREAM", "DJ"],
+              "mediaTags": ["HIRES_LOSSLESS", "LOSSLESS"],
+              "type": "SINGLE"
+            }
+        "#;
+
+        let attr: AlbumSearchIncludedAttributes = serde_json::from_str(json).unwrap();
+
+        assert_eq!(attr.title, "Michelle (Take 1)");
+        assert_eq!(attr.barcode_id.as_deref(), Some("00881061189336"));
+        assert_eq!(attr.number_of_volumes, Some(1));
+        assert_eq!(attr.number_of_items, Some(1));
+        assert_eq!(attr.duration, "PT3M17S");
+        assert!(!attr.explicit);
+        assert_eq!(attr.release_date.as_deref(), Some("2026-07-29"));
+        assert!((attr.popularity - 0.7160302460678571).abs() < f64::EPSILON);
+        assert_eq!(attr.access_type.as_deref(), Some("PUBLIC"));
+        assert_eq!(attr.availability.as_deref(), Some(&["STREAM".to_string(), "DJ".to_string()][..]));
+        assert_eq!(
+            attr.media_tags.as_deref(),
+            Some(&["HIRES_LOSSLESS".to_string(), "LOSSLESS".to_string()][..])
+        );
+        assert_eq!(attr.r#type, "SINGLE");
+    }
+
+    /// Regression: `GET /artists/{id}/relationships/albums?include=albums`
+    /// returned `release_date: null` on the add-album page because the included
+    /// album attributes deserialized with snake_case field names against Tidal's
+    /// camelCase payload. This test feeds the exact shape `get_artist_albums`
+    /// deserializes and asserts the date survives the round trip.
+    #[test]
+    fn deserializes_artist_albums_relationship_document() {
+        let json = r#"
+            {
+              "data": [
+                {"id": "546629982", "type": "albums"}
+              ],
+              "included": [
+                {
+                  "id": "546629982",
+                  "type": "albums",
+                  "attributes": {
+                    "title": "Michelle (Take 1)",
+                    "barcodeId": "00881061189336",
+                    "numberOfVolumes": 1,
+                    "numberOfItems": 1,
+                    "duration": "PT3M17S",
+                    "explicit": false,
+                    "releaseDate": "2026-07-29",
+                    "popularity": 0.7160302460678571,
+                    "accessType": "PUBLIC",
+                    "availability": ["STREAM", "DJ"],
+                    "mediaTags": ["HIRES_LOSSLESS", "LOSSLESS"],
+                    "type": "SINGLE"
+                  }
+                }
+              ],
+              "links": null
+            }
+        "#;
+
+        let doc: ArtistAlbumsRelationshipDocument = serde_json::from_str(json).unwrap();
+
+        assert_eq!(doc.included.len(), 1);
+        let inc = &doc.included[0];
+        assert_eq!(inc.id, "546629982");
+        assert_eq!(inc.attributes.release_date.as_deref(), Some("2026-07-29"));
+        assert_eq!(inc.attributes.barcode_id.as_deref(), Some("00881061189336"));
+        assert_eq!(inc.attributes.number_of_volumes, Some(1));
+        assert_eq!(inc.attributes.number_of_items, Some(1));
+        assert_eq!(inc.attributes.access_type.as_deref(), Some("PUBLIC"));
+        assert_eq!(inc.attributes.media_tags.as_deref().map(|v| v.len()), Some(2));
+        assert!(doc.links.is_none());
+    }
+
+    /// Regression guard: if `rename_all` is removed or reverted to `rename`,
+    /// camelCase fields must fail to deserialize (they would silently `None`
+    /// under the old bug). This test asserts the opposite direction, that a
+    /// payload missing snake_case aliases still deserializes, proving the
+    /// camelCase mapping is active rather than field names happening to match.
+    #[test]
+    fn does_not_accept_snake_case_field_names() {
+        let json = r#"
+            {
+              "title": "Michelle (Take 1)",
+              "release_date": "2026-07-29",
+              "popularity": 0.0,
+              "duration": "PT0S",
+              "explicit": false,
+              "type": "SINGLE"
+            }
+        "#;
+
+        let attr: AlbumSearchIncludedAttributes = serde_json::from_str(json).unwrap();
+
+        // Under `rename_all = "camelCase"`, `release_date` in the JSON does
+        // not map to the `release_date` Rust field. The field stays `None`.
+        // This is the expected behavior and documents that the struct relies
+        // on camelCase input from Tidal.
+        assert_eq!(attr.title, "Michelle (Take 1)");
+        assert_eq!(attr.release_date, None);
     }
 }

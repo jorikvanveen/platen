@@ -20,6 +20,7 @@
     }
 </script>
 
+{@debug data}
 <h1>{data.artist.name}</h1>
 <table>
     <thead>
