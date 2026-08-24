@@ -12,7 +12,7 @@ pub struct Model {
     pub title: String,
     pub album_type: Option<String>,
     pub jellyfin_id: Option<String>,
-    pub musicbrainz_id: Option<String>,
+    pub musicbrainz_release_group_id: Option<String>,
     pub match_method: Option<String>,
 }
 

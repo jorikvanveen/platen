@@ -26,7 +26,7 @@ pub mod dto {
         pub title: String,
         pub album_type: Option<String>,
         pub jellyfin_id: Option<String>,
-        pub musicbrainz_id: Option<String>,
+        pub musicbrainz_release_group_id: Option<String>,
         pub match_method: Option<String>,
     }
 }
@@ -39,7 +39,7 @@ impl From<album::Model> for dto::Album {
             title: model.title,
             album_type: model.album_type,
             jellyfin_id: model.jellyfin_id,
-            musicbrainz_id: model.musicbrainz_id,
+            musicbrainz_release_group_id: model.musicbrainz_release_group_id,
             match_method: model.match_method
         }
     }
@@ -73,7 +73,7 @@ pub async fn create(
         title: ActiveValue::Set(tidal_album.title),
         album_type: ActiveValue::Set(tidal_album.album_type),
         jellyfin_id: ActiveValue::Set(None),
-        musicbrainz_id: ActiveValue::Set(None),
+        musicbrainz_release_group_id: ActiveValue::Set(None),
         match_method: ActiveValue::Set(Some("tidal_id".into())),
     }
     .insert(&db)

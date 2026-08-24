@@ -17,7 +17,7 @@ pub mod dto {
     pub struct Artist {
         pub id: String,
         pub name: String,
-        pub musicbrainz_id: Option<String>,
+        pub musicbrainz_artist_id: Option<String>,
     }
 }
 
@@ -26,7 +26,7 @@ impl From<artist::Model> for dto::Artist {
         dto::Artist {
             id: model.id,
             name: model.name,
-            musicbrainz_id: model.musicbrainz_id,
+            musicbrainz_artist_id: model.musicbrainz_artist_id,
         }
     }
 }
@@ -62,7 +62,7 @@ pub async fn create(
     let artist_model = artist::ActiveModel {
         id: ActiveValue::Set(tidal_artist.id),
         name: ActiveValue::Set(tidal_artist.name),
-        musicbrainz_id: ActiveValue::Set(None),
+        musicbrainz_artist_id: ActiveValue::Set(None),
     };
 
     let result_model = artist_model.insert(&db).await.map_err(|e| {

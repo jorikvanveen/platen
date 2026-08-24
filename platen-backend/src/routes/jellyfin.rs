@@ -122,19 +122,19 @@ enum ExistingMbidDecision {
 /// Decision for the artist upsert phase.
 #[derive(Debug, PartialEq)]
 enum ArtistDecision {
-    /// Existing artist row; backfill its missing MusicBrainz ID.
-    Backfill { mbid: String },
+    /// Existing artist row; backfill its missing MusicBrainz artist ID.
+    Backfill { mb_artist_id: String },
     /// No artist row; insert a new one.
-    Insert { id: String, name: String, mbid: Option<String> },
-    /// Existing artist row already complete (or no MBID to backfill).
+    Insert { id: String, name: String, mb_artist_id: Option<String> },
+    /// Existing artist row already complete (or no MB artist ID to backfill).
     Noop,
 }
 
 /// Decision for the album insert/link phase.
 #[derive(Debug, PartialEq)]
 enum AlbumDecision {
-    /// A row with this Tidal ID exists; link Jellyfin/MB IDs onto it.
-    LinkExisting { jellyfin_id: Option<String>, musicbrainz_id: Option<String> },
+    /// A row with this Tidal ID exists; link Jellyfin/MB release group IDs onto it.
+    LinkExisting { jellyfin_id: Option<String>, musicbrainz_release_group_id: Option<String> },
     /// No row; create a new album keyed by the Tidal ID.
     Create {
         id: String,
@@ -142,7 +142,7 @@ enum AlbumDecision {
         title: String,
         album_type: Option<String>,
         jellyfin_id: String,
-        musicbrainz_id: String,
+        musicbrainz_release_group_id: String,
     },
 }
 
@@ -171,8 +171,8 @@ fn decide_artist(
 ) -> ArtistDecision {
     match existing_artist {
         Some(existing) => {
-            if existing.musicbrainz_id.is_none() && mb_artist_id.is_some() {
-                ArtistDecision::Backfill { mbid: mb_artist_id.unwrap().to_string() }
+            if existing.musicbrainz_artist_id.is_none() && mb_artist_id.is_some() {
+                ArtistDecision::Backfill { mb_artist_id: mb_artist_id.unwrap().to_string() }
             } else {
                 ArtistDecision::Noop
             }
@@ -180,7 +180,7 @@ fn decide_artist(
         None => ArtistDecision::Insert {
             id: tidal_artist.id.clone(),
             name: tidal_artist.name.clone(),
-            mbid: mb_artist_id.map(str::to_string),
+            mb_artist_id: mb_artist_id.map(str::to_string),
         },
     }
 }
@@ -206,12 +206,12 @@ fn decide_album_insert(
             } else {
                 existing.jellyfin_id.clone()
             };
-            let musicbrainz_id = if existing.musicbrainz_id.is_none() {
+            let musicbrainz_release_group_id = if existing.musicbrainz_release_group_id.is_none() {
                 Some(mb_release_group_id.to_string())
             } else {
-                existing.musicbrainz_id.clone()
+                existing.musicbrainz_release_group_id.clone()
             };
-            AlbumDecision::LinkExisting { jellyfin_id, musicbrainz_id }
+            AlbumDecision::LinkExisting { jellyfin_id, musicbrainz_release_group_id }
         }
         None => AlbumDecision::Create {
             id: tidal_hit.id.clone(),
@@ -219,7 +219,7 @@ fn decide_album_insert(
             title: title.to_string(),
             album_type: tidal_hit.album_type.clone(),
             jellyfin_id: jf_album.id.clone(),
-            musicbrainz_id: mb_release_group_id.to_string(),
+            musicbrainz_release_group_id: mb_release_group_id.to_string(),
         },
     }
 }
@@ -236,9 +236,9 @@ async fn resolve_album(
     mb_release_group_id: String,
     mb_artist_id: Option<String>,
 ) -> Result<Outcome, String> {
-    // 1. Look up an existing album by its MusicBrainz ID and decide.
+    // 1. Look up an existing album by its MusicBrainz release group ID and decide.
     let existing_by_mbid = album::Entity::find()
-        .filter(album::Column::MusicbrainzId.eq(mb_release_group_id.clone()))
+        .filter(album::Column::MusicbrainzReleaseGroupId.eq(mb_release_group_id.clone()))
         .one(db)
         .await
         .map_err(|e| {
@@ -320,19 +320,19 @@ async fn resolve_album(
         })?;
 
     match decide_artist(existing_artist.as_ref(), &tidal_artist, mb_artist_id.as_deref()) {
-        ArtistDecision::Backfill { mbid } => {
+        ArtistDecision::Backfill { mb_artist_id } => {
             let mut active: artist::ActiveModel = existing_artist.unwrap().into();
-            active.musicbrainz_id = Set(Some(mbid));
+            active.musicbrainz_artist_id = Set(Some(mb_artist_id));
             active.update(db).await.map_err(|e| {
-                error!("Db error updating artist MBID: {e:#?}");
+                error!("Db error updating artist MB artist ID: {e:#?}");
                 "database error".to_string()
             })?;
         }
-        ArtistDecision::Insert { id, name, mbid } => {
+        ArtistDecision::Insert { id, name, mb_artist_id } => {
             artist::ActiveModel {
                 id: ActiveValue::Set(id),
                 name: ActiveValue::Set(name),
-                musicbrainz_id: ActiveValue::Set(mbid),
+                musicbrainz_artist_id: ActiveValue::Set(mb_artist_id),
             }
             .insert(db)
             .await
@@ -362,24 +362,24 @@ async fn resolve_album(
         jf_album,
         &mb_release_group_id,
     ) {
-        AlbumDecision::LinkExisting { jellyfin_id, musicbrainz_id } => {
+        AlbumDecision::LinkExisting { jellyfin_id, musicbrainz_release_group_id } => {
             let mut active: album::ActiveModel = existing_by_tidal_id.unwrap().into();
             active.jellyfin_id = Set(jellyfin_id);
-            active.musicbrainz_id = Set(musicbrainz_id);
+            active.musicbrainz_release_group_id = Set(musicbrainz_release_group_id);
             active.update(db).await.map_err(|e| {
                 error!("Db error linking album by Tidal ID: {e:#?}");
                 "database error".to_string()
             })?;
             Ok(Outcome::Linked)
         }
-        AlbumDecision::Create { id, artist_id, title, album_type, jellyfin_id, musicbrainz_id } => {
+        AlbumDecision::Create { id, artist_id, title, album_type, jellyfin_id, musicbrainz_release_group_id } => {
             album::ActiveModel {
                 id: ActiveValue::Set(id),
                 artist_id: ActiveValue::Set(artist_id),
                 title: ActiveValue::Set(title),
                 album_type: ActiveValue::Set(album_type),
                 jellyfin_id: ActiveValue::Set(Some(jellyfin_id)),
-                musicbrainz_id: ActiveValue::Set(Some(musicbrainz_id)),
+                musicbrainz_release_group_id: ActiveValue::Set(Some(musicbrainz_release_group_id)),
                 match_method: ActiveValue::Set(Some("name_search".to_string())),
             }
             .insert(db)
@@ -433,23 +433,23 @@ mod tests {
         }
     }
 
-    fn album_model(id: &str, jellyfin_id: Option<&str>, musicbrainz_id: Option<&str>) -> album::Model {
+    fn album_model(id: &str, jellyfin_id: Option<&str>, musicbrainz_release_group_id: Option<&str>) -> album::Model {
         album::Model {
             id: id.to_string(),
             artist_id: "artist-1".to_string(),
             title: "Some Album".to_string(),
             album_type: None,
             jellyfin_id: jellyfin_id.map(str::to_string),
-            musicbrainz_id: musicbrainz_id.map(str::to_string),
+            musicbrainz_release_group_id: musicbrainz_release_group_id.map(str::to_string),
             match_method: None,
         }
     }
 
-    fn artist_model(id: &str, name: &str, mbid: Option<&str>) -> artist::Model {
+    fn artist_model(id: &str, name: &str, mb_artist_id: Option<&str>) -> artist::Model {
         artist::Model {
             id: id.to_string(),
             name: name.to_string(),
-            musicbrainz_id: mbid.map(str::to_string),
+            musicbrainz_artist_id: mb_artist_id.map(str::to_string),
         }
     }
 
@@ -491,7 +491,7 @@ mod tests {
             ArtistDecision::Insert {
                 id: "ta-1".to_string(),
                 name: "The Artist".to_string(),
-                mbid: Some("mb-artist-1".to_string()),
+                mb_artist_id: Some("mb-artist-1".to_string()),
             },
         );
     }
@@ -504,7 +504,7 @@ mod tests {
             ArtistDecision::Insert {
                 id: "ta-1".to_string(),
                 name: "The Artist".to_string(),
-                mbid: None,
+                mb_artist_id: None,
             },
         );
     }
@@ -515,7 +515,7 @@ mod tests {
         let ta = tidal_artist("ta-1", "The Artist");
         assert_eq!(
             decide_artist(Some(&existing), &ta, Some("mb-artist-1")),
-            ArtistDecision::Backfill { mbid: "mb-artist-1".to_string() },
+            ArtistDecision::Backfill { mb_artist_id: "mb-artist-1".to_string() },
         );
     }
 
@@ -554,7 +554,7 @@ mod tests {
                 title: "Some Album".to_string(),
                 album_type: Some("ALBUM".to_string()),
                 jellyfin_id: "jf-1".to_string(),
-                musicbrainz_id: "mbid-1".to_string(),
+                musicbrainz_release_group_id: "mbid-1".to_string(),
             },
         );
     }
@@ -572,7 +572,7 @@ mod tests {
                 title: "Some Album".to_string(),
                 album_type: None,
                 jellyfin_id: "jf-1".to_string(),
-                musicbrainz_id: "mbid-1".to_string(),
+                musicbrainz_release_group_id: "mbid-1".to_string(),
             },
         );
     }
@@ -587,7 +587,7 @@ mod tests {
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),
             AlbumDecision::LinkExisting {
                 jellyfin_id: Some("jf-1".to_string()),
-                musicbrainz_id: Some("mbid-1".to_string()),
+                musicbrainz_release_group_id: Some("mbid-1".to_string()),
             },
         );
     }
@@ -602,7 +602,7 @@ mod tests {
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),
             AlbumDecision::LinkExisting {
                 jellyfin_id: Some("old-jf".to_string()),
-                musicbrainz_id: Some("mbid-1".to_string()),
+                musicbrainz_release_group_id: Some("mbid-1".to_string()),
             },
         );
     }
@@ -617,7 +617,7 @@ mod tests {
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),
             AlbumDecision::LinkExisting {
                 jellyfin_id: Some("jf-1".to_string()),
-                musicbrainz_id: Some("old-mbid".to_string()),
+                musicbrainz_release_group_id: Some("old-mbid".to_string()),
             },
         );
     }
@@ -632,7 +632,7 @@ mod tests {
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),
             AlbumDecision::LinkExisting {
                 jellyfin_id: Some("old-jf".to_string()),
-                musicbrainz_id: Some("old-mbid".to_string()),
+                musicbrainz_release_group_id: Some("old-mbid".to_string()),
             },
         );
     }
