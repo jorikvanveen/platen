@@ -17,8 +17,10 @@ and owning one or more Albums.
 _Avoid_: musician, performer, act
 
 **Album**:
-A music album represented in the catalog. Identified by its Tidal album ID and
-belonging to one Artist.
+A release represented in the catalog. Identified by its Tidal album ID and
+belonging to one Artist. A release may be an album, EP, or single; the
+`album_type` field records which, taken from Tidal's `type`. The name "Album"
+is the entity's name, not a claim that every row is a full-length album.
 _Avoid_: release, record
 
 ## External services

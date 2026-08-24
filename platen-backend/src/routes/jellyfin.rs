@@ -218,7 +218,7 @@ fn decide_album_insert(
             id: tidal_hit.id.clone(),
             artist_id: tidal_artist.id.clone(),
             title: title.to_string(),
-            album_type: tidal_hit.album_type.clone(),
+            album_type: Some(tidal_hit.r#type.clone()),
             jellyfin_id: jf_album.id.clone(),
             musicbrainz_release_group_id: mb_release_group_id.to_string(),
         },
@@ -415,7 +415,7 @@ mod tests {
         TidalArtist { id: id.to_string(), name: name.to_string() }
     }
 
-    fn tidal_hit(id: &str, album_type: Option<&str>) -> ResolvedTidalSearchedAlbum {
+    fn tidal_hit(id: &str, ty: &str) -> ResolvedTidalSearchedAlbum {
         ResolvedTidalSearchedAlbum {
             id: id.to_string(),
             title: "Some Album".to_string(),
@@ -429,8 +429,7 @@ mod tests {
             access_type: None,
             availability: None,
             media_tags: None,
-            r#type: "ALBUM".to_string(),
-            album_type: album_type.map(str::to_string),
+            r#type: ty.to_string(),
         }
     }
 
@@ -545,7 +544,7 @@ mod tests {
     #[test]
     fn album_none_creates() {
         let ta = tidal_artist("ta-1", "The Artist");
-        let hit = tidal_hit("tidal-1", Some("ALBUM"));
+        let hit = tidal_hit("tidal-1", "EP");
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(None, "Some Album", &hit, &ta, &jf, "mbid-1"),
@@ -553,25 +552,7 @@ mod tests {
                 id: "tidal-1".to_string(),
                 artist_id: "ta-1".to_string(),
                 title: "Some Album".to_string(),
-                album_type: Some("ALBUM".to_string()),
-                jellyfin_id: "jf-1".to_string(),
-                musicbrainz_release_group_id: "mbid-1".to_string(),
-            },
-        );
-    }
-
-    #[test]
-    fn album_none_creates_with_null_album_type() {
-        let ta = tidal_artist("ta-1", "The Artist");
-        let hit = tidal_hit("tidal-1", None);
-        let jf = jf_album("jf-1");
-        assert_eq!(
-            decide_album_insert(None, "Some Album", &hit, &ta, &jf, "mbid-1"),
-            AlbumDecision::Create {
-                id: "tidal-1".to_string(),
-                artist_id: "ta-1".to_string(),
-                title: "Some Album".to_string(),
-                album_type: None,
+                album_type: Some("EP".to_string()),
                 jellyfin_id: "jf-1".to_string(),
                 musicbrainz_release_group_id: "mbid-1".to_string(),
             },
@@ -582,7 +563,7 @@ mod tests {
     fn album_existing_without_ids_links_both() {
         let existing = album_model("tidal-1", None, None);
         let ta = tidal_artist("ta-1", "The Artist");
-        let hit = tidal_hit("tidal-1", Some("ALBUM"));
+        let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),
@@ -597,7 +578,7 @@ mod tests {
     fn album_existing_with_jellyfin_id_preserves_it() {
         let existing = album_model("tidal-1", Some("old-jf"), None);
         let ta = tidal_artist("ta-1", "The Artist");
-        let hit = tidal_hit("tidal-1", Some("ALBUM"));
+        let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),
@@ -612,7 +593,7 @@ mod tests {
     fn album_existing_with_mbid_preserves_it() {
         let existing = album_model("tidal-1", None, Some("old-mbid"));
         let ta = tidal_artist("ta-1", "The Artist");
-        let hit = tidal_hit("tidal-1", Some("ALBUM"));
+        let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),
@@ -627,7 +608,7 @@ mod tests {
     fn album_existing_with_both_ids_preserves_both() {
         let existing = album_model("tidal-1", Some("old-jf"), Some("old-mbid"));
         let ta = tidal_artist("ta-1", "The Artist");
-        let hit = tidal_hit("tidal-1", Some("ALBUM"));
+        let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(Some(&existing), "Some Album", &hit, &ta, &jf, "mbid-1"),

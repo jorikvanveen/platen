@@ -71,7 +71,7 @@ pub async fn create(
         id: ActiveValue::Set(tidal_album.id),
         artist_id: ActiveValue::Set(artist_id),
         title: ActiveValue::Set(tidal_album.title),
-        album_type: ActiveValue::Set(tidal_album.album_type),
+        album_type: ActiveValue::Set(Some(tidal_album.r#type)),
         jellyfin_id: ActiveValue::Set(None),
         musicbrainz_release_group_id: ActiveValue::Set(None),
         match_method: ActiveValue::Set(Some("tidal_id".into())),

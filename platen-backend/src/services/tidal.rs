@@ -339,7 +339,6 @@ pub struct TidalArtist {
 pub struct TidalAlbum {
     pub id: String,
     pub title: String,
-    pub album_type: Option<String>,
     pub release_date: Option<String>,
     pub barcode_id: Option<String>,
     pub number_of_volumes: Option<u32>,
@@ -357,7 +356,6 @@ impl TidalAlbum {
         TidalAlbum {
             id,
             title: attr.title,
-            album_type: attr.album_type,
             release_date: attr.release_date,
             barcode_id: attr.barcode_id,
             number_of_volumes: attr.number_of_volumes,
@@ -388,7 +386,6 @@ pub struct ResolvedTidalSearchedAlbum {
     pub availability: Option<Vec<String>>,
     pub media_tags: Option<Vec<String>>,
     pub r#type: String,
-    pub album_type: Option<String>,
 }
 
 impl
@@ -418,7 +415,6 @@ impl
             availability: attr.availability.clone(),
             media_tags: attr.media_tags.clone(),
             r#type: attr.r#type.clone(),
-            album_type: attr.album_type.clone(),
         }
     }
 }
@@ -485,7 +481,6 @@ mod tidal_response {
         pub availability: Option<Vec<String>>,
         pub media_tags: Option<Vec<String>>,
         pub r#type: String,
-        pub album_type: Option<String>,
     }
 
     #[derive(Debug, Deserialize)]

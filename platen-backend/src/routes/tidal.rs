@@ -26,7 +26,7 @@ pub mod dto {
     pub struct TidalAlbum {
         pub id: String,
         pub title: String,
-        pub r#type: String,
+        pub album_type: String,
         pub release_date: Option<String>,
         pub popularity: f64,
     }
@@ -46,7 +46,7 @@ impl From<crate::services::tidal::TidalAlbum> for dto::TidalAlbum {
         dto::TidalAlbum {
             id: a.id,
             title: a.title,
-            r#type: a.r#type,
+            album_type: a.r#type,
             release_date: a.release_date,
             popularity: a.popularity,
         }
