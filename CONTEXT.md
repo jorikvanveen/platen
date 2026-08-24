@@ -47,8 +47,8 @@ A public music metadata authority. Platen uses two of its entities:
   regions. A MusicBrainz release group ID is the stable cross-service album
   identifier stored on an Album as its `musicbrainz_release_group_id`.
 - Artist Credit — the named party behind a release group. Platen reads the
-  first credit's name and ID to drive Tidal name search and to backfill an
-  Artist's `musicbrainz_artist_id`.
+  first credit's name and ID to drive Tidal name search and to link the Artist
+  to MusicBrainz via `musicbrainz_artist_id`.
 
 The two columns used to share one name (`musicbrainz_id`), which made it
 ambiguous which MusicBrainz entity a value referred to. They are now named
@@ -94,15 +94,20 @@ possible outcomes tracked in an Import Summary:
 Import only processes Jellyfin items that carry a MusicBrainz release group ID.
 Items without one are skipped without error.
 
-### Backfill
+### MusicBrainz Linking
 
-Filling in a missing MusicBrainz ID on an existing catalog row when it is
-discovered later, without changing the row's identity. An Artist created from a
-Tidal-only flow can later have its MusicBrainz artist ID backfilled during
+Filling in a missing MusicBrainz artist ID on an existing Artist when it is
+discovered later, without changing the Artist's identity. An Artist created
+from a Tidal-only flow can later have its MusicBrainz artist ID linked during
 Import.
 
-### Linking
+Distinct from Jellyfin Linking, which records Jellyfin IDs and MusicBrainz
+release group IDs on Albums. The two are sibling operations: Jellyfin Linking
+is Album-side, MusicBrainz Linking is Artist-side.
 
-Connecting an existing catalog row to another service by recording that
-service's ID on the row, without creating a new row. Distinct from Creating,
-which inserts a new row keyed by a Tidal ID.
+### Jellyfin Linking
+
+Connecting an existing Album to Jellyfin by recording the Jellyfin item's
+Jellyfin ID on the row, along with the MusicBrainz release group ID the item
+carries, without creating a new row. Distinct from Creating, which inserts a
+new row keyed by a Tidal ID.

@@ -52,7 +52,8 @@ optional cross-reference columns on the row.
   Artist. An earlier schema used one `musicbrainz_id` column on both tables,
   which made the entity type ambiguous; migration
   `m20260824_180325_rename_musicbrainz_id_columns` renamed them.
-- Backfill and Linking are first-class operations because the row's identity is
-  fixed at creation but its cross-references arrive later.
+- Jellyfin Linking and MusicBrainz Linking are first-class operations because
+  the row's identity is fixed at creation but its cross-references arrive
+  later.
 - Switching identity authorities later would require re-keying both tables, the
   foreign key, and every DTO. Costly.

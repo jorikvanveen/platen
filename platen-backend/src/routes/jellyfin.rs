@@ -122,11 +122,12 @@ enum ExistingMbidDecision {
 /// Decision for the artist upsert phase.
 #[derive(Debug, PartialEq)]
 enum ArtistDecision {
-    /// Existing artist row; backfill its missing MusicBrainz artist ID.
-    Backfill { mb_artist_id: String },
+    /// Existing artist row; link it to MusicBrainz by setting its missing
+    /// `musicbrainz_artist_id`.
+    LinkMusicBrainz { mb_artist_id: String },
     /// No artist row; insert a new one.
     Insert { id: String, name: String, mb_artist_id: Option<String> },
-    /// Existing artist row already complete (or no MB artist ID to backfill).
+    /// Existing artist row already complete (or no MB artist ID to link).
     Noop,
 }
 
@@ -172,7 +173,7 @@ fn decide_artist(
     match existing_artist {
         Some(existing) => {
             if existing.musicbrainz_artist_id.is_none() && mb_artist_id.is_some() {
-                ArtistDecision::Backfill { mb_artist_id: mb_artist_id.unwrap().to_string() }
+                ArtistDecision::LinkMusicBrainz { mb_artist_id: mb_artist_id.unwrap().to_string() }
             } else {
                 ArtistDecision::Noop
             }
@@ -320,7 +321,7 @@ async fn resolve_album(
         })?;
 
     match decide_artist(existing_artist.as_ref(), &tidal_artist, mb_artist_id.as_deref()) {
-        ArtistDecision::Backfill { mb_artist_id } => {
+        ArtistDecision::LinkMusicBrainz { mb_artist_id } => {
             let mut active: artist::ActiveModel = existing_artist.unwrap().into();
             active.musicbrainz_artist_id = Set(Some(mb_artist_id));
             active.update(db).await.map_err(|e| {
@@ -510,12 +511,12 @@ mod tests {
     }
 
     #[test]
-    fn artist_existing_without_mbid_backfills() {
+    fn artist_existing_without_mbid_links_musicbrainz() {
         let existing = artist_model("ta-1", "The Artist", None);
         let ta = tidal_artist("ta-1", "The Artist");
         assert_eq!(
             decide_artist(Some(&existing), &ta, Some("mb-artist-1")),
-            ArtistDecision::Backfill { mb_artist_id: "mb-artist-1".to_string() },
+            ArtistDecision::LinkMusicBrainz { mb_artist_id: "mb-artist-1".to_string() },
         );
     }
 
