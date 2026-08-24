@@ -1,5 +1,6 @@
 <script lang="ts">
     import { API_URL } from "$lib/constants";
+    import { groupAlbums } from "$lib/albumGroups";
     import type { PageProps } from "./$types";
 
     let { data }: PageProps = $props()
@@ -18,37 +19,50 @@
     function isAdded(id: string): boolean {
       return data.existing_album_ids.includes(id) || added_ids.includes(id);
     }
+
+    const groups = groupAlbums(data.albums);
 </script>
 
-{@debug data}
 <h1>{data.artist.name}</h1>
-<table>
-    <thead>
-        <tr>
-            <th>Name</th>
-            <th>Date</th>
-            <th>Type</th>
-            <th></th>
-        </tr>
-    </thead>
-    <tbody>
-        {#if data.albums.length === 0}
+{#if data.albums.length === 0}
+    <table>
+        <thead>
             <tr>
-                <td colspan="4">No results</td>
+                <th>Name</th>
+                <th>Date</th>
+                <th></th>
             </tr>
-        {:else}
-            {#each data.albums as album}
+        </thead>
+        <tbody>
+            <tr>
+                <td colspan="3">No results</td>
+            </tr>
+        </tbody>
+    </table>
+{:else}
+    {#each groups as group}
+        <h2>{group.label}</h2>
+        <table>
+            <thead>
                 <tr>
-                    <td>{album.title}</td>
-                    <td>{album.release_date || ""}</td>
-                    <td>{album.album_type || ""}</td>
-                    <td>
-                        {#if !isAdded(album.id)}
-                            <button onclick={() => addAlbum(album.id)}>Add</button>
-                        {/if}
-                    </td>
+                    <th>Name</th>
+                    <th>Date</th>
+                    <th></th>
                 </tr>
-            {/each}
-        {/if}
-    </tbody>
-</table>
+            </thead>
+            <tbody>
+                {#each group.albums as album}
+                    <tr>
+                        <td>{album.title}</td>
+                        <td>{album.release_date || ""}</td>
+                        <td>
+                            {#if !isAdded(album.id)}
+                                <button onclick={() => addAlbum(album.id)}>Add</button>
+                            {/if}
+                        </td>
+                    </tr>
+                {/each}
+            </tbody>
+        </table>
+    {/each}
+{/if}
