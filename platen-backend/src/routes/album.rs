@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use chrono::Datelike;
+
 use axum::{
     Json,
     extract::{Path, State},
@@ -40,7 +42,7 @@ impl From<album::Model> for dto::Album {
             album_type: model.album_type,
             jellyfin_id: model.jellyfin_id,
             musicbrainz_release_group_id: model.musicbrainz_release_group_id,
-            match_method: model.match_method
+            match_method: model.match_method,
         }
     }
 }
@@ -64,7 +66,10 @@ pub async fn create(
 
     let tidal_album = {
         let mut tidal = tidal.lock().await;
-        tidal.get_album(&album_id).await.map_err(crate::routes::utils::map_tidal_error)?
+        tidal
+            .get_album(&album_id)
+            .await
+            .map_err(crate::routes::utils::map_tidal_error)?
     };
 
     let model = album::ActiveModel {
@@ -139,8 +144,21 @@ pub async fn download(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    let music_dir = PathBuf::from(config.music_dir);
+    let destination = if album
+        .album_type
+        .as_deref()
+        .is_some_and(|album_type| album_type.eq_ignore_ascii_case("SINGLE"))
+    {
+        // TODO: This should get the release date from the album, currently it's not stored in the DB
+        let album_directory = format!("{} ({})", album.title, chrono::Utc::now().year());
+        music_dir.join(&artist.name).join(album_directory)
+    } else {
+        music_dir
+    };
+
     antra
-        .download_album(&album, &PathBuf::from(config.music_dir))
+        .download_album(&album, &destination)
         .await
         .map_err(|e| {
             error!("Download failed: {e:#?}");

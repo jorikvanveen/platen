@@ -41,9 +41,10 @@ not manage its audio files; it reconciles Jellyfin's album list against the
 catalog and records Jellyfin album IDs on Album rows as a link back.
 
 **Antra**:
-A download service. Given a Tidal album URL, fetches lossless audio and delivers
-a zip platen extracts into the user's music directory. Download depends on the
-Album's Tidal ID being valid in Tidal.
+A download service. Given a Tidal album URL, fetches lossless audio. For an album
+or EP it delivers a ZIP that platen extracts into the user's music directory. For
+a single it delivers a standalone FLAC that platen places directly in that
+directory. Download depends on the Album's Tidal ID being valid in Tidal.
 
 ## Reconciliation
 

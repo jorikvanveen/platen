@@ -11,10 +11,7 @@ use color_eyre::Report;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    entity::album,
-    services::downloaders::Downloader,
-};
+use crate::{entity::album, services::downloaders::Downloader};
 
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
 
@@ -160,14 +157,14 @@ impl Antra {
             Some(f) => f,
             None => {
                 tracing::error!("Content-disposion did not have filename");
-                return Err(AntraError::DownloadFailed);
+                return Err(AntraError::UnexpectedDownloadType);
             }
         };
 
         let tmp = std::env::temp_dir();
         fs::create_dir_all(&tmp).await?;
-        let zip_path = tmp.join(filename);
-        let mut file = File::create(&zip_path).await?;
+        let download_path = tmp.join(filename);
+        let mut file = File::create(&download_path).await?;
 
         tracing::info!("Starting download");
         loop {
@@ -179,7 +176,27 @@ impl Antra {
             file.write_all(&chunk).await?;
         }
         tracing::info!("Download finished");
-        Ok(zip_path)
+        Ok(download_path)
+    }
+
+    async fn move_single_to_destination(
+        download_path: PathBuf,
+        destination: &std::path::Path,
+    ) -> Result<(), AntraError> {
+        let filename = download_path
+            .file_name()
+            .ok_or(AntraError::DownloadFailed)?;
+        let destination_path = destination.join(filename);
+
+        fs::create_dir_all(destination).await?;
+        if destination_path.exists() {
+            fs::remove_file(download_path).await?;
+            return Ok(());
+        }
+
+        fs::copy(&download_path, &destination_path).await?;
+        fs::remove_file(download_path).await?;
+        Ok(())
     }
 }
 
@@ -242,6 +259,9 @@ pub enum AntraError {
     #[error("Failed to download job")]
     DownloadFailed,
 
+    #[error("Antra returned a file type that does not match the album type")]
+    UnexpectedDownloadType,
+
     #[error("Failed to unzip download")]
     UnzipFailed,
 }
@@ -271,21 +291,43 @@ impl Downloader for Antra {
             }
         }
 
-        let zip_path = self.job_download(&job_id).await?;
+        let download_path = self.job_download(&job_id).await?;
+        let is_single = album
+            .album_type
+            .as_deref()
+            .is_some_and(|album_type| album_type.eq_ignore_ascii_case("SINGLE"));
+        let is_album_or_ep = album.album_type.as_deref().is_some_and(|album_type| {
+            album_type.eq_ignore_ascii_case("ALBUM") || album_type.eq_ignore_ascii_case("EP")
+        });
+        let extension = download_path.extension();
+        let is_flac = extension.is_some_and(|extension| extension.eq_ignore_ascii_case("flac"));
+        let is_zip = extension.is_some_and(|extension| extension.eq_ignore_ascii_case("zip"));
+
+        if (!is_single && !is_album_or_ep) || (is_single && !is_flac) || (is_album_or_ep && !is_zip)
+        {
+            let _ = fs::remove_file(&download_path).await;
+            return Err(AntraError::UnexpectedDownloadType);
+        }
+
+        if is_single {
+            return Self::move_single_to_destination(download_path, destination).await;
+        }
 
         tracing::info!("Unzipping");
         let exit_status = Command::new("unzip")
             .arg("-n")
-            .arg(zip_path)
+            .arg(&download_path)
             .arg("-d")
             .arg(destination)
             .spawn()?
             .wait()
             .await?;
         if !exit_status.success() {
+            let _ = fs::remove_file(&download_path).await;
             return Err(AntraError::UnzipFailed);
         }
 
+        fs::remove_file(download_path).await?;
         Ok(())
     }
 }
