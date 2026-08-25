@@ -109,12 +109,20 @@ enum Outcome {
 }
 
 /// Decision for the existing-album-by-MBID lookup phase.
+///
+/// Transient: returned by `decide_existing_mbid` and consumed by the caller's
+/// match in the next statement, so the 216-byte `Link` variant is fine despite
+/// the size gap with `Skip`/`Proceed`.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 enum ExistingMbidDecision {
     /// An album row already has a Jellyfin ID; nothing to do.
     Skip,
     /// An album row exists but lacks a Jellyfin ID; link it.
-    Link { jellyfin_id: String },
+    Link {
+        existing: album::Model,
+        jellyfin_id: String,
+    },
     /// No row by MBID; proceed to the Tidal search path.
     Proceed,
 }
@@ -124,7 +132,10 @@ enum ExistingMbidDecision {
 enum ArtistDecision {
     /// Existing artist row; link it to MusicBrainz by setting its missing
     /// `musicbrainz_artist_id`.
-    LinkMusicBrainz { mb_artist_id: String },
+    LinkMusicBrainz {
+        existing: artist::Model,
+        mb_artist_id: String,
+    },
     /// No artist row; insert a new one.
     Insert {
         id: String,
@@ -140,6 +151,7 @@ enum ArtistDecision {
 enum AlbumDecision {
     /// A row with this Tidal ID exists; link Jellyfin/MB release group IDs onto it.
     LinkExisting {
+        existing: album::Model,
         jellyfin_id: Option<String>,
         musicbrainz_release_group_id: Option<String>,
     },
@@ -157,14 +169,16 @@ enum AlbumDecision {
 
 /// Decide what to do given an existing album row looked up by MBID.
 ///
-/// Pure: no I/O, no `sea-orm` types in the return.
+/// Pure: takes only plain data (the row and the Jellyfin album) and returns
+/// plain data. No I/O, no handles to stateful services.
 fn decide_existing_mbid(
-    existing_by_mbid: Option<&album::Model>,
+    existing_by_mbid: Option<album::Model>,
     jf_album: &crate::services::jellyfin::JellyfinAlbum,
 ) -> ExistingMbidDecision {
     match existing_by_mbid {
         Some(existing) if existing.jellyfin_id.is_some() => ExistingMbidDecision::Skip,
-        Some(_) => ExistingMbidDecision::Link {
+        Some(existing) => ExistingMbidDecision::Link {
+            existing,
             jellyfin_id: jf_album.id.clone(),
         },
         None => ExistingMbidDecision::Proceed,
@@ -173,23 +187,25 @@ fn decide_existing_mbid(
 
 /// Decide what to do for the artist row keyed by the Tidal artist ID.
 ///
-/// Pure: takes the existing artist row (if any), the Tidal artist, and the
-/// optional MusicBrainz artist ID Jellyfin may have provided.
+/// Pure: takes only plain data and returns plain data. No I/O, no handles to
+/// stateful services.
 fn decide_artist(
-    existing_artist: Option<&artist::Model>,
+    existing_artist: Option<artist::Model>,
     tidal_artist: &crate::services::tidal::TidalArtist,
     mb_artist_id: Option<&str>,
 ) -> ArtistDecision {
     match existing_artist {
-        Some(existing) => {
-            if existing.musicbrainz_artist_id.is_none() && mb_artist_id.is_some() {
+        Some(existing) if existing.musicbrainz_artist_id.is_none() => {
+            if let Some(mb_id) = mb_artist_id {
                 ArtistDecision::LinkMusicBrainz {
-                    mb_artist_id: mb_artist_id.unwrap().to_string(),
+                    existing,
+                    mb_artist_id: mb_id.to_string(),
                 }
             } else {
                 ArtistDecision::Noop
             }
         }
+        Some(_) => ArtistDecision::Noop,
         None => ArtistDecision::Insert {
             id: tidal_artist.id.clone(),
             name: tidal_artist.name.clone(),
@@ -201,11 +217,12 @@ fn decide_artist(
 /// Decide whether to link an existing album row (found by Tidal ID) or create
 /// a new one.
 ///
-/// Pure: the shell is responsible for translating `LinkExisting`/`Create`
-/// into `ActiveModel` writes.
+/// Pure: takes only plain data and returns plain data. No I/O, no handles to
+/// stateful services. The shell is responsible for translating
+/// `LinkExisting`/`Create` into `ActiveModel` writes.
 #[allow(clippy::too_many_arguments)]
 fn decide_album_insert(
-    existing_by_tidal_id: Option<&album::Model>,
+    existing_by_tidal_id: Option<album::Model>,
     title: &str,
     tidal_hit: &crate::services::tidal::ResolvedTidalSearchedAlbum,
     tidal_artist: &crate::services::tidal::TidalArtist,
@@ -226,6 +243,7 @@ fn decide_album_insert(
                 existing.musicbrainz_release_group_id.clone()
             };
             AlbumDecision::LinkExisting {
+                existing,
                 jellyfin_id,
                 musicbrainz_release_group_id,
             }
@@ -237,6 +255,8 @@ fn decide_album_insert(
             album_type: Some(tidal_hit.r#type.clone()),
             jellyfin_id: jf_album.id.clone(),
             musicbrainz_release_group_id: mb_release_group_id.to_string(),
+            // Invariant: the caller (resolve_album) computes release_date = Some(...)
+            // iff existing_by_tidal_id is None, so the Create arm always has a date.
             release_date: release_date.expect("release date required for new album"),
         },
     }
@@ -264,10 +284,13 @@ async fn resolve_album(
             "database error".to_string()
         })?;
 
-    match decide_existing_mbid(existing_by_mbid.as_ref(), jf_album) {
+    match decide_existing_mbid(existing_by_mbid, jf_album) {
         ExistingMbidDecision::Skip => return Ok(Outcome::Skipped),
-        ExistingMbidDecision::Link { jellyfin_id } => {
-            let mut active: album::ActiveModel = existing_by_mbid.unwrap().into();
+        ExistingMbidDecision::Link {
+            existing,
+            jellyfin_id,
+        } => {
+            let mut active: album::ActiveModel = existing.into();
             active.jellyfin_id = ActiveValue::Set(Some(jellyfin_id));
             active.update(db).await.map_err(|e| {
                 error!("Db error linking existing album: {e:#?}");
@@ -337,13 +360,12 @@ async fn resolve_album(
             "database error".to_string()
         })?;
 
-    match decide_artist(
-        existing_artist.as_ref(),
-        &tidal_artist,
-        mb_artist_id.as_deref(),
-    ) {
-        ArtistDecision::LinkMusicBrainz { mb_artist_id } => {
-            let mut active: artist::ActiveModel = existing_artist.unwrap().into();
+    match decide_artist(existing_artist, &tidal_artist, mb_artist_id.as_deref()) {
+        ArtistDecision::LinkMusicBrainz {
+            existing,
+            mb_artist_id,
+        } => {
+            let mut active: artist::ActiveModel = existing.into();
             active.musicbrainz_artist_id = Set(Some(mb_artist_id));
             active.update(db).await.map_err(|e| {
                 error!("Db error updating artist MB artist ID: {e:#?}");
@@ -391,7 +413,7 @@ async fn resolve_album(
     };
 
     match decide_album_insert(
-        existing_by_tidal_id.as_ref(),
+        existing_by_tidal_id,
         &title,
         &first_hit,
         &tidal_artist,
@@ -400,10 +422,11 @@ async fn resolve_album(
         release_date,
     ) {
         AlbumDecision::LinkExisting {
+            existing,
             jellyfin_id,
             musicbrainz_release_group_id,
         } => {
-            let mut active: album::ActiveModel = existing_by_tidal_id.unwrap().into();
+            let mut active: album::ActiveModel = existing.into();
             active.jellyfin_id = Set(jellyfin_id);
             active.musicbrainz_release_group_id = Set(musicbrainz_release_group_id);
             active.update(db).await.map_err(|e| {
@@ -527,7 +550,7 @@ mod tests {
     fn existing_mbid_with_jellyfin_id_skips() {
         let existing = album_model("mbid-row", Some("old-jf"), Some("mbid-1"));
         assert_eq!(
-            decide_existing_mbid(Some(&existing), &jf_album("jf-1")),
+            decide_existing_mbid(Some(existing), &jf_album("jf-1")),
             ExistingMbidDecision::Skip,
         );
     }
@@ -536,8 +559,9 @@ mod tests {
     fn existing_mbid_without_jellyfin_id_links() {
         let existing = album_model("mbid-row", None, Some("mbid-1"));
         assert_eq!(
-            decide_existing_mbid(Some(&existing), &jf_album("jf-1")),
+            decide_existing_mbid(Some(existing.clone()), &jf_album("jf-1")),
             ExistingMbidDecision::Link {
+                existing,
                 jellyfin_id: "jf-1".to_string()
             },
         );
@@ -576,8 +600,9 @@ mod tests {
         let existing = artist_model("ta-1", "The Artist", None);
         let ta = tidal_artist("ta-1", "The Artist");
         assert_eq!(
-            decide_artist(Some(&existing), &ta, Some("mb-artist-1")),
+            decide_artist(Some(existing.clone()), &ta, Some("mb-artist-1")),
             ArtistDecision::LinkMusicBrainz {
+                existing,
                 mb_artist_id: "mb-artist-1".to_string()
             },
         );
@@ -588,7 +613,7 @@ mod tests {
         let existing = artist_model("ta-1", "The Artist", Some("mb-artist-1"));
         let ta = tidal_artist("ta-1", "The Artist");
         assert_eq!(
-            decide_artist(Some(&existing), &ta, Some("mb-artist-2")),
+            decide_artist(Some(existing), &ta, Some("mb-artist-2")),
             ArtistDecision::Noop,
         );
     }
@@ -598,7 +623,7 @@ mod tests {
         let existing = artist_model("ta-1", "The Artist", None);
         let ta = tidal_artist("ta-1", "The Artist");
         assert_eq!(
-            decide_artist(Some(&existing), &ta, None),
+            decide_artist(Some(existing), &ta, None),
             ArtistDecision::Noop,
         );
     }
@@ -648,7 +673,7 @@ mod tests {
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(
-                Some(&existing),
+                Some(existing.clone()),
                 "Some Album",
                 &hit,
                 &ta,
@@ -657,6 +682,7 @@ mod tests {
                 None,
             ),
             AlbumDecision::LinkExisting {
+                existing,
                 jellyfin_id: Some("jf-1".to_string()),
                 musicbrainz_release_group_id: Some("mbid-1".to_string()),
             },
@@ -671,7 +697,7 @@ mod tests {
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(
-                Some(&existing),
+                Some(existing.clone()),
                 "Some Album",
                 &hit,
                 &ta,
@@ -680,6 +706,7 @@ mod tests {
                 None,
             ),
             AlbumDecision::LinkExisting {
+                existing,
                 jellyfin_id: Some("old-jf".to_string()),
                 musicbrainz_release_group_id: Some("mbid-1".to_string()),
             },
@@ -694,7 +721,7 @@ mod tests {
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(
-                Some(&existing),
+                Some(existing.clone()),
                 "Some Album",
                 &hit,
                 &ta,
@@ -703,6 +730,7 @@ mod tests {
                 None,
             ),
             AlbumDecision::LinkExisting {
+                existing,
                 jellyfin_id: Some("jf-1".to_string()),
                 musicbrainz_release_group_id: Some("old-mbid".to_string()),
             },
@@ -717,7 +745,7 @@ mod tests {
         let jf = jf_album("jf-1");
         assert_eq!(
             decide_album_insert(
-                Some(&existing),
+                Some(existing.clone()),
                 "Some Album",
                 &hit,
                 &ta,
@@ -726,6 +754,7 @@ mod tests {
                 None,
             ),
             AlbumDecision::LinkExisting {
+                existing,
                 jellyfin_id: Some("old-jf".to_string()),
                 musicbrainz_release_group_id: Some("old-mbid".to_string()),
             },

@@ -39,7 +39,9 @@ pub struct Jellyfin {
 impl Jellyfin {
     pub fn new(url: String, api_key: String, user_id: String) -> Self {
         Self {
-            client: ClientBuilder::new().build().unwrap(),
+            client: ClientBuilder::new().build().expect(
+                "reqwest client build only fails on TLS misconfiguration, which is static here",
+            ),
             url: url.trim_end_matches('/').to_string(),
             api_key,
             user_id,

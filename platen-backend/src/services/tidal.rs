@@ -36,7 +36,9 @@ pub struct Tidal {
 impl Tidal {
     pub fn new(client_id: String, client_secret: String) -> Self {
         Self {
-            client: reqwest::ClientBuilder::new().build().unwrap(),
+            client: reqwest::ClientBuilder::new().build().expect(
+                "reqwest client build only fails on TLS misconfiguration, which is static here",
+            ),
             token: None,
             expires_at: Default::default(),
             client_id,
@@ -93,7 +95,7 @@ impl Tidal {
         }
     }
 
-    async fn get_oauth_token(&mut self) -> Result<(), TidalError> {
+    async fn get_oauth_token(&mut self) -> Result<String, TidalError> {
         let credentials =
             BASE64_STANDARD.encode(format!("{}:{}", self.client_id, self.client_secret));
 
@@ -118,24 +120,22 @@ impl Tidal {
             .await
             .map_err(|_| TidalError::UnexpectedResponse)?;
 
-        self.token = Some(response.access_token);
+        let token = response.access_token;
+        self.token = Some(token.clone());
         self.expires_at =
             chrono::Utc::now() + Duration::from_secs(response.expires_in.saturating_sub(60));
 
         tracing::info!("Authenticated with tidal");
-
-        Ok(())
+        Ok(token)
     }
 
     async fn ensure_token(&mut self) -> Result<String, TidalError> {
         let now = chrono::Utc::now();
-
-        if self.token.is_some() && self.expires_at > now {
-            return Ok(self.token.clone().unwrap());
+        let cached = self.token.clone().filter(|_| self.expires_at > now);
+        if let Some(token) = cached {
+            return Ok(token);
         }
-
-        self.get_oauth_token().await?;
-        Ok(self.token.clone().unwrap())
+        self.get_oauth_token().await
     }
 
     pub async fn find_album(

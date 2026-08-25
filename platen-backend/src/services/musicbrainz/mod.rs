@@ -32,7 +32,7 @@ impl Musicbrainz {
                 ClientBuilder::default()
                     .user_agent("platen/1.0.0 (https://github.com/jorikvanveen)")
                     .build()
-                    .unwrap(),
+                    .expect("reqwest client build only fails on TLS misconfiguration, which is static here"),
             ),
             rate_limit: RateLimit::new(1200),
         }

@@ -34,7 +34,9 @@ impl Antra {
             client: reqwest::ClientBuilder::new()
                 .cookie_store(true)
                 .build()
-                .unwrap(),
+                .expect(
+                    "reqwest client build only fails on TLS misconfiguration, which is static here",
+                ),
             username: config.antra_username.clone(),
             password: config.antra_password.clone(),
         }
@@ -126,7 +128,7 @@ impl Antra {
         }
 
         let text = dbg!(resp.text().await?);
-        Ok(serde_json::from_str(&text).unwrap())
+        Ok(serde_json::from_str(&text)?)
     }
 
     async fn job_download(&self, job_id: &str) -> Result<PathBuf, AntraError> {
@@ -252,6 +254,9 @@ pub enum AntraError {
 
     #[error("Failed to receive job status")]
     CantGetStatus,
+
+    #[error("Job status response was not valid JSON: {0}")]
+    BadStatus(#[from] serde_json::Error),
 
     #[error("I/O Error: {0}")]
     IoError(#[from] io::Error),

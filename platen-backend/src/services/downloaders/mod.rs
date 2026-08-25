@@ -29,7 +29,10 @@ impl RateLimit {
     }
 
     pub async fn wait(&self) {
-        let permit = Arc::clone(&self.semaphore).acquire_owned().await.unwrap();
+        let permit = Arc::clone(&self.semaphore)
+            .acquire_owned()
+            .await
+            .expect("RateLimit owns the semaphore; it cannot be closed while RateLimit is alive");
         let duration = Duration::from_millis(self.cooldown_ms);
         task::spawn(async move {
             // Make sure that the next acquisition goes through at least `cooldown_ms` later
