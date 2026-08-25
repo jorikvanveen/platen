@@ -6,9 +6,9 @@ use thiserror::Error;
 use tokio::time::sleep;
 
 use tidal_response::{
-    AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,
-    ArtistSingleResource, AlbumSingleResource,
-    ArtistAlbumsRelationshipDocument, AlbumWithArtistsDocument, ArtistSearchDocument,
+    AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData, AlbumSingleResource,
+    AlbumWithArtistsDocument, ArtistAlbumsRelationshipDocument, ArtistSearchDocument,
+    ArtistSingleResource,
 };
 
 static TIDAL_BASE_URL: &str = "https://openapi.tidal.com/v2";
@@ -210,10 +210,7 @@ impl Tidal {
     /// `links.next` (a relative path carrying an opaque `page[cursor]`). The loop
     /// follows `links.next` until it is absent, or after `MAX_PAGES` requests as
     /// a safety cap.
-    pub async fn get_artist_albums(
-        &mut self,
-        id: &str,
-    ) -> Result<Vec<TidalAlbum>, TidalError> {
+    pub async fn get_artist_albums(&mut self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
         const MAX_PAGES: usize = 50;
         let mut albums: Vec<TidalAlbum> = Vec::new();
         let mut next: Option<String> = None;
@@ -221,9 +218,9 @@ impl Tidal {
         for page in 0..MAX_PAGES {
             let url = match &next {
                 Some(rel) => format!("{TIDAL_BASE_URL}{rel}"),
-                None => format!(
-                    "{TIDAL_BASE_URL}/artists/{id}/relationships/albums?include=albums"
-                ),
+                None => {
+                    format!("{TIDAL_BASE_URL}/artists/{id}/relationships/albums?include=albums")
+                }
             };
             let resp = self.send_with_retry(self.client.get(url)).await?;
             if !resp.status().is_success() {
@@ -252,10 +249,7 @@ impl Tidal {
     }
 
     /// `GET /albums/{id}?include=artists` -> album with its artists.
-    pub async fn get_album_artists(
-        &mut self,
-        id: &str,
-    ) -> Result<Vec<TidalArtist>, TidalError> {
+    pub async fn get_album_artists(&mut self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=artists");
         let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
@@ -288,13 +282,9 @@ impl Tidal {
     }
 
     /// `GET /searchResults?filter[query]=...&include=artists` -> artist search.
-    pub async fn search_artists(
-        &mut self,
-        query: &str,
-    ) -> Result<Vec<TidalArtist>, TidalError> {
+    pub async fn search_artists(&mut self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let encoded = urlencoding::encode(query);
-        let url =
-            format!("{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists");
+        let url = format!("{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists");
 
         let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
@@ -592,9 +582,7 @@ mod tidal_response {
 
 #[cfg(test)]
 mod tests {
-    use super::tidal_response::{
-        AlbumSearchIncludedAttributes, ArtistAlbumsRelationshipDocument,
-    };
+    use super::tidal_response::{AlbumSearchIncludedAttributes, ArtistAlbumsRelationshipDocument};
 
     /// Regression: `AlbumSearchIncludedAttributes` used `#[serde(rename =
     /// "camelCase")]`, which renames the type, not the fields. Serde looked for
@@ -631,7 +619,10 @@ mod tests {
         assert_eq!(attr.release_date.as_deref(), Some("2026-07-29"));
         assert!((attr.popularity - 0.7160302460678571).abs() < f64::EPSILON);
         assert_eq!(attr.access_type.as_deref(), Some("PUBLIC"));
-        assert_eq!(attr.availability.as_deref(), Some(&["STREAM".to_string(), "DJ".to_string()][..]));
+        assert_eq!(
+            attr.availability.as_deref(),
+            Some(&["STREAM".to_string(), "DJ".to_string()][..])
+        );
         assert_eq!(
             attr.media_tags.as_deref(),
             Some(&["HIRES_LOSSLESS".to_string(), "LOSSLESS".to_string()][..])
@@ -685,7 +676,10 @@ mod tests {
         assert_eq!(inc.attributes.number_of_volumes, Some(1));
         assert_eq!(inc.attributes.number_of_items, Some(1));
         assert_eq!(inc.attributes.access_type.as_deref(), Some("PUBLIC"));
-        assert_eq!(inc.attributes.media_tags.as_deref().map(|v| v.len()), Some(2));
+        assert_eq!(
+            inc.attributes.media_tags.as_deref().map(|v| v.len()),
+            Some(2)
+        );
         assert!(doc.links.is_none());
     }
 

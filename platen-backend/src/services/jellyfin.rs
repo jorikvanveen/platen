@@ -48,9 +48,10 @@ impl Jellyfin {
 
     fn request(&self, path: &str) -> reqwest::RequestBuilder {
         let url = format!("{}{}", self.url, path);
-        self.client
-            .get(url)
-            .header("Authorization", format!("MediaBrowser Token=\"{}\"", self.api_key))
+        self.client.get(url).header(
+            "Authorization",
+            format!("MediaBrowser Token=\"{}\"", self.api_key),
+        )
     }
 
     #[instrument]

@@ -1,4 +1,4 @@
-use serde::{Deserialize};
+use serde::Deserialize;
 use tracing::instrument;
 
 use super::{BASE_URL, RequestError};
@@ -11,7 +11,8 @@ impl Musicbrainz {
         release_group_id: &str,
     ) -> Result<ReleaseGroup, RequestError> {
         tracing::info!("Getting release group: {release_group_id}");
-        let url = format!("{BASE_URL}/release-group/{release_group_id}?inc=artist-credits&fmt=json");
+        let url =
+            format!("{BASE_URL}/release-group/{release_group_id}?inc=artist-credits&fmt=json");
         let resp = self.fetch_with_retry(&url).await?;
         if !resp.status().is_success() {
             return Err(RequestError::MusicbrainzError(

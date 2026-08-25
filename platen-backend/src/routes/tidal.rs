@@ -66,7 +66,10 @@ pub async fn search_artists(
     info!("Searching tidal for artist: {query}");
     let artists = {
         let mut tidal = tidal.lock().await;
-        tidal.search_artists(&query).await.map_err(map_tidal_error)?
+        tidal
+            .search_artists(&query)
+            .await
+            .map_err(map_tidal_error)?
     };
     Ok(Json(artists.into_iter().map(Into::into).collect()))
 }

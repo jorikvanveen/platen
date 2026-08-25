@@ -14,6 +14,9 @@ pub struct Model {
     pub jellyfin_id: Option<String>,
     pub musicbrainz_release_group_id: Option<String>,
     pub match_method: Option<String>,
+    pub release_year: i32,
+    pub release_month: Option<i32>,
+    pub release_day: Option<i32>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

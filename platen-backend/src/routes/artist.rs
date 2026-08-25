@@ -56,7 +56,10 @@ pub async fn create(
     info!("Creating artist {id}");
     let tidal_artist = {
         let mut tidal = tidal.lock().await;
-        tidal.get_artist(&id).await.map_err(utils::map_tidal_error)?
+        tidal
+            .get_artist(&id)
+            .await
+            .map_err(utils::map_tidal_error)?
     };
 
     let artist_model = artist::ActiveModel {

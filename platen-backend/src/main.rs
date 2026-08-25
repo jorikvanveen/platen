@@ -14,10 +14,7 @@ use serde::Deserialize;
 use tokio::{net::TcpListener, sync::Mutex};
 
 use crate::services::{
-    downloaders::antra::Antra,
-    jellyfin::Jellyfin,
-    musicbrainz::Musicbrainz,
-    tidal::Tidal,
+    downloaders::antra::Antra, jellyfin::Jellyfin, musicbrainz::Musicbrainz, tidal::Tidal,
 };
 
 #[allow(unused)]
@@ -88,6 +85,10 @@ async fn main() -> color_eyre::Result<()> {
             post(routes::album::create),
         )
         .route("/artists/{artist_id}/albums", get(routes::album::fetch_all))
+        .route(
+            "/albums/refresh-release-dates",
+            get(routes::album::refresh_release_dates),
+        )
         .route(
             "/artists/{artist_id}/albums/{album_id}/download",
             post(routes::album::download),
