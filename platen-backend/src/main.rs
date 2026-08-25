@@ -75,6 +75,7 @@ async fn main() -> color_eyre::Result<()> {
         antra,
         db,
         config,
+        import_state: Arc::new(Mutex::new(routes::jellyfin::ImportState::default())),
     };
     let app = Router::new()
         .route("/artists", get(routes::artist::list))
@@ -96,6 +97,7 @@ async fn main() -> color_eyre::Result<()> {
         .route("/tidal/search/artists", get(routes::tidal::search_artists))
         .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))
         .route("/jellyfin/import", post(routes::jellyfin::import))
+        .route("/jellyfin/import/status", get(routes::jellyfin::status))
         .route("/", get(|| async { "Hello world" }))
         .with_state(state);
     let listener = TcpListener::bind(&bind_address).await?;
@@ -109,6 +111,7 @@ async fn main() -> color_eyre::Result<()> {
 struct AppState {
     musicbrainz: Musicbrainz,
     jellyfin: Jellyfin,
+    import_state: Arc<Mutex<routes::jellyfin::ImportState>>,
     tidal: Arc<Mutex<Tidal>>,
     antra: Antra,
     db: DatabaseConnection,

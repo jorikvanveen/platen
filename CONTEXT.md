@@ -49,9 +49,10 @@ directory. Download depends on the Album's Tidal ID being valid in Tidal.
 ## Reconciliation
 
 **Import**:
-The process of scanning Jellyfin's album list and bringing the catalog into
-agreement with it. Each Jellyfin album resolves to a created, linked, skipped, or
-failed outcome.
+The process of scanning Jellyfin's album list and adding to or linking the
+catalog against it. Each Jellyfin album resolves to a created, linked, skipped,
+or failed outcome. Import is non-destructive: Artists and Albums absent from
+Jellyfin remain in the catalog.
 _Avoid_: sync, scan, ingest
 
 **MusicBrainz Linking**:
