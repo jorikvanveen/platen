@@ -14,7 +14,8 @@ use serde::Deserialize;
 use tokio::{net::TcpListener, sync::Mutex};
 
 use crate::services::{
-    downloaders::antra::Antra, jellyfin::Jellyfin, musicbrainz::Musicbrainz, tidal::Tidal,
+    downloaders::antra::Antra, import::ImportTracker, jellyfin::Jellyfin, musicbrainz::Musicbrainz,
+    tidal::Tidal,
 };
 
 #[allow(unused)]
@@ -75,7 +76,7 @@ async fn main() -> color_eyre::Result<()> {
         antra,
         db,
         config,
-        import_state: Arc::new(Mutex::new(routes::jellyfin::ImportState::default())),
+        import: ImportTracker::default(),
     };
     let app = Router::new()
         .route("/artists", get(routes::artist::list))
@@ -111,7 +112,7 @@ async fn main() -> color_eyre::Result<()> {
 struct AppState {
     musicbrainz: Musicbrainz,
     jellyfin: Jellyfin,
-    import_state: Arc<Mutex<routes::jellyfin::ImportState>>,
+    import: ImportTracker,
     tidal: Arc<Mutex<Tidal>>,
     antra: Antra,
     db: DatabaseConnection,
