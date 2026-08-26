@@ -1,15 +1,13 @@
-use std::sync::Arc;
-
 use axum::{Json, extract::State};
 use reqwest::StatusCode;
 use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
-use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 use crate::{
     AppState,
     entity::{album, artist},
     routes::album::{ReleaseDate, parse_release_date},
+    services::import::{Failure as ServiceFailure, Status as ServiceStatus, Summary as ServiceSummary},
     services::musicbrainz::RequestError as MbRequestError,
 };
 
@@ -68,87 +66,39 @@ impl axum::response::IntoResponse for ImportError {
     }
 }
 
-/// In-process import state shared across handlers.
-///
-/// `running` is true only while a [`RunningGuard`] exists. The guard does not
-/// hold the mutex for the import's duration; it locks only briefly to flip
-/// `running` on `acquire` and off `Drop`. The long Tidal/MusicBrainz awaits run
-/// with the lock free, so [`status`] can `lock().await` and observe `running`
-/// mid-import (R5, R8). `Drop` clears the flag on every exit path: success
-/// (after [`RunningGuard::finish`] already cleared it), the `BAD_GATEWAY` early
-/// return, and panic unwind (best-effort `try_lock`).
-#[derive(Debug, Default)]
-pub struct ImportState {
-    pub running: bool,
-    pub last_summary: Option<dto::ImportSummary>,
-}
-
-/// RAII guard that keeps `import_state.running = true` while alive and clears
-/// it on `Drop`. Build it with [`RunningGuard::acquire`], which rejects a
-/// concurrent import by returning the [`dto::ImportStatus`] to send as `409`.
-///
-/// The guard borrows the shared `Arc<Mutex<ImportState>>` but does not hold the
-/// mutex guard across the import body. `acquire` locks only long enough to flip
-/// `running` to `true`; [`RunningGuard::finish`] locks only long enough to write
-/// `last_summary` and flip `running` back to `false`. This keeps the mutex free
-/// during the minutes-long external awaits so [`status`] can read the state
-/// without blocking for the whole import (R5, R8).
-#[derive(Debug)]
-pub struct RunningGuard<'a> {
-    state: &'a Arc<Mutex<ImportState>>,
-    spent: bool,
-}
-
-impl<'a> RunningGuard<'a> {
-    /// Try to start an import. Returns `Err(ImportStatus)` with
-    /// `state = Running` and the last completed run's `last_summary` when an
-    /// import is already in flight, so the caller can return it as `409`
-    /// Conflict (R4).
-    ///
-    /// Uses `lock().await` rather than `try_lock`: a running import only holds
-    /// the mutex during its own `acquire`/`finish`, so a second request waits at
-    /// most for that brief window, not for the whole import.
-    pub async fn acquire(
-        import_state: &'a Arc<Mutex<ImportState>>,
-    ) -> Result<Self, dto::ImportStatus> {
-        let mut guard = import_state.lock().await;
-        if guard.running {
-            return Err(dto::ImportStatus {
-                state: dto::ImportStateKind::Running,
-                last_summary: guard.last_summary.clone(),
-            });
+impl From<ServiceFailure> for dto::ImportFailure {
+    fn from(f: ServiceFailure) -> Self {
+        dto::ImportFailure {
+            name: f.name,
+            reason: f.reason,
         }
-        guard.running = true;
-        drop(guard);
-        Ok(Self {
-            state: import_state,
-            spent: false,
-        })
-    }
-
-    /// Record the completed run's summary and clear `running`. Called on the
-    /// success path; after this `Drop` is a no-op (R7).
-    pub async fn finish(&mut self, summary: dto::ImportSummary) {
-        let mut guard = self.state.lock().await;
-        guard.last_summary = Some(summary);
-        guard.running = false;
-        self.spent = true;
     }
 }
 
-impl Drop for RunningGuard<'_> {
-    fn drop(&mut self) {
-        if self.spent {
-            return;
+/// Map a service-side [`ServiceSummary`] onto the wire DTO. The service layer
+/// stays serde-free; serialization concerns live here.
+impl From<ServiceSummary> for dto::ImportSummary {
+    fn from(s: ServiceSummary) -> Self {
+        dto::ImportSummary {
+            total_scanned: s.total_scanned,
+            created: s.created,
+            linked: s.linked,
+            skipped: s.skipped,
+            failed: s.failed,
+            failures: s.failures.into_iter().map(Into::into).collect(),
         }
-        // Fallback for early returns (`BAD_GATEWAY`) and panic unwind: clear the
-        // flag without holding up the dropping task. `try_lock` is safe here
-        // because a running import does not hold the mutex between `acquire` and
-        // `finish`; the only contender is a brief [`status`] read, so this
-        // virtually always succeeds. If it ever does not, a process restart
-        // clears the flag (see ADR 0002).
-        if let Ok(mut guard) = self.state.try_lock() {
-            guard.running = false;
+    }
+}
+
+impl From<ServiceStatus> for dto::ImportStatus {
+    fn from(s: ServiceStatus) -> Self {
+        dto::ImportStatus {
+            state: if s.running {
+                dto::ImportStateKind::Running
+            } else {
+                dto::ImportStateKind::Idle
+            },
+            last_summary: s.last_summary.map(Into::into),
         }
     }
 }
@@ -156,7 +106,7 @@ impl Drop for RunningGuard<'_> {
 #[axum::debug_handler]
 pub async fn import(
     State(AppState {
-        import_state,
+        import,
         musicbrainz,
         jellyfin,
         tidal,
@@ -166,11 +116,11 @@ pub async fn import(
 ) -> Result<Json<dto::ImportSummary>, ImportError> {
     info!("Starting Jellyfin import");
 
-    let mut guard = match RunningGuard::acquire(&import_state).await {
+    let mut guard = match import.try_begin_import().await {
         Ok(g) => g,
         Err(status) => {
             info!("Rejecting concurrent Jellyfin import");
-            return Err(ImportError::Conflict(status));
+            return Err(ImportError::Conflict(status.into()));
         }
     };
 
@@ -179,7 +129,7 @@ pub async fn import(
         ImportError::BadGateway
     })?;
 
-    let mut summary = dto::ImportSummary {
+    let mut summary = ServiceSummary {
         total_scanned: jellyfin_albums.len() as u32,
         created: 0,
         linked: 0,
@@ -220,7 +170,7 @@ pub async fn import(
             Ok(Outcome::Skipped) => summary.skipped += 1,
             Err(reason) => {
                 summary.failed += 1;
-                summary.failures.push(dto::ImportFailure {
+                summary.failures.push(ServiceFailure {
                     name: jf_album.name,
                     reason,
                 });
@@ -229,30 +179,21 @@ pub async fn import(
     }
 
     guard.finish(summary.clone()).await;
-    Ok(Json(summary))
+    Ok(Json(summary.into()))
 }
 
 /// `GET /jellyfin/import/status`: always `200` with the current
 /// [`dto::ImportStatus`] (R5).
 ///
-/// Uses `lock().await`, not `try_lock` (R8). [`import`] does not hold the mutex
+/// Uses `lock().await`, not `try_lock`. An import does not hold the mutex
 /// across its external awaits, so this only blocks for the brief windows where
-/// `acquire` or [`RunningGuard::finish`] are flipping the flag. A poll therefore
-/// observes `running` while an import is in flight and reads `last_summary` from
-/// the last completed run, even mid-import.
+/// begin or finish are flipping the flag. A poll therefore observes `running`
+/// while an import is in flight and reads `last_summary` from the last
+/// completed run, even mid-import.
 #[axum::debug_handler]
-pub async fn status(
-    State(AppState { import_state, .. }): State<AppState>,
-) -> Json<dto::ImportStatus> {
-    let state = import_state.lock().await;
-    Json(dto::ImportStatus {
-        state: if state.running {
-            dto::ImportStateKind::Running
-        } else {
-            dto::ImportStateKind::Idle
-        },
-        last_summary: state.last_summary.clone(),
-    })
+pub async fn status(State(AppState { import, .. }): State<AppState>) -> Json<dto::ImportStatus> {
+    let status = import.status().await;
+    Json(status.into())
 }
 
 enum Outcome {
@@ -627,72 +568,6 @@ mod tests {
     use crate::services::jellyfin::JellyfinAlbum;
     use crate::services::tidal::{ResolvedTidalSearchedAlbum, TidalArtist};
     use std::collections::HashMap;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    // --- RunningGuard ---
-
-    // The guard does not hold the mutex between `acquire` and `Drop`; it only
-    // locks briefly to flip `running` on `acquire` and off `Drop`. So reading
-    // `running` while the guard is live is a separate `lock().await`, which is
-    // safe under the single-threaded `#[tokio::test]` runtime because no lock is
-    // held across the await.
-
-    #[tokio::test]
-    async fn running_guard_marks_running_while_held() {
-        let state = Arc::new(Mutex::new(ImportState::default()));
-        let _guard = RunningGuard::acquire(&state)
-            .await
-            .expect("acquire when idle");
-        assert!(
-            state.lock().await.running,
-            "running must be true while the guard is held"
-        );
-    }
-
-    #[tokio::test]
-    async fn running_guard_clears_running_on_drop() {
-        let state = Arc::new(Mutex::new(ImportState::default()));
-        {
-            let _guard = RunningGuard::acquire(&state)
-                .await
-                .expect("acquire when idle");
-            assert!(
-                state.lock().await.running,
-                "running must be true while the guard is held"
-            );
-        }
-        assert!(
-            !state.lock().await.running,
-            "running must be false after the guard drops"
-        );
-    }
-
-    #[tokio::test]
-    async fn running_guard_rejects_second_acquire_while_held() {
-        let state = Arc::new(Mutex::new(ImportState::default()));
-        let _first = RunningGuard::acquire(&state)
-            .await
-            .expect("first acquire when idle");
-        let status = RunningGuard::acquire(&state)
-            .await
-            .expect_err("a second acquire while running must be rejected");
-        assert_eq!(status.state, dto::ImportStateKind::Running);
-        assert!(status.last_summary.is_none());
-    }
-
-    #[tokio::test]
-    async fn running_guard_allows_reacquire_after_drop() {
-        let state = Arc::new(Mutex::new(ImportState::default()));
-        {
-            let _guard = RunningGuard::acquire(&state)
-                .await
-                .expect("acquire when idle");
-        }
-        RunningGuard::acquire(&state)
-            .await
-            .expect("a fresh acquire must succeed once the guard has dropped");
-    }
 
     fn jf_album(id: &str) -> JellyfinAlbum {
         JellyfinAlbum {
