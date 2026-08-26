@@ -52,8 +52,7 @@ pub mod dto {
 }
 
 /// Error response for [`import`]. `Conflict` carries the typed `ImportStatus`
-/// body for a rejected concurrent import (R4); `BadGateway` preserves the
-/// existing empty-body `502` for an unreachable Jellyfin server.
+/// body; `BadGateway` keeps the empty-body `502` clients already handle.
 pub(crate) enum ImportError {
     Conflict(dto::ImportStatus),
     BadGateway,
@@ -70,13 +69,8 @@ impl axum::response::IntoResponse for ImportError {
 
 /// In-process import state shared across handlers.
 ///
-/// `running` is true only while a [`RunningGuard`] exists. The guard does not
-/// hold the mutex for the import's duration; it locks only briefly to flip
-/// `running` on `acquire` and off `Drop`. The long Tidal/MusicBrainz awaits run
-/// with the lock free, so [`status`] can `lock().await` and observe `running`
-/// mid-import (R5, R8). `Drop` clears the flag on every exit path: success
-/// (after [`RunningGuard::finish`] already cleared it), the `BAD_GATEWAY` early
-/// return, and panic unwind (best-effort `try_lock`).
+/// The mutex is never held across the import's external awaits (see
+/// [`RunningGuard`]), so [`status`] can observe `running` mid-import.
 #[derive(Debug, Default)]
 pub struct ImportState {
     pub running: bool,
@@ -84,15 +78,9 @@ pub struct ImportState {
 }
 
 /// RAII guard that keeps `import_state.running = true` while alive and clears
-/// it on `Drop`. Build it with [`RunningGuard::acquire`], which rejects a
-/// concurrent import by returning the [`dto::ImportStatus`] to send as `409`.
-///
-/// The guard borrows the shared `Arc<Mutex<ImportState>>` but does not hold the
-/// mutex guard across the import body. `acquire` locks only long enough to flip
-/// `running` to `true`; [`RunningGuard::finish`] locks only long enough to write
-/// `last_summary` and flip `running` back to `false`. This keeps the mutex free
-/// during the minutes-long external awaits so [`status`] can read the state
-/// without blocking for the whole import (R5, R8).
+/// it on `Drop`. It locks only briefly on `acquire`, `finish`, and `Drop`, so
+/// the mutex stays free during the minutes-long Tidal/MusicBrainz awaits and
+/// [`status`] can read state mid-import.
 #[derive(Debug)]
 pub struct RunningGuard<'a> {
     state: &'a Arc<Mutex<ImportState>>,
@@ -100,14 +88,8 @@ pub struct RunningGuard<'a> {
 }
 
 impl<'a> RunningGuard<'a> {
-    /// Try to start an import. Returns `Err(ImportStatus)` with
-    /// `state = Running` and the last completed run's `last_summary` when an
-    /// import is already in flight, so the caller can return it as `409`
-    /// Conflict (R4).
-    ///
-    /// Uses `lock().await` rather than `try_lock`: a running import only holds
-    /// the mutex during its own `acquire`/`finish`, so a second request waits at
-    /// most for that brief window, not for the whole import.
+    /// Rejects a concurrent import with the current [`dto::ImportStatus`] so
+    /// the caller can return it as `409`.
     pub async fn acquire(
         import_state: &'a Arc<Mutex<ImportState>>,
     ) -> Result<Self, dto::ImportStatus> {
@@ -126,8 +108,8 @@ impl<'a> RunningGuard<'a> {
         })
     }
 
-    /// Record the completed run's summary and clear `running`. Called on the
-    /// success path; after this `Drop` is a no-op (R7).
+    /// Record the completed run's summary and clear `running`; makes the
+    /// later `Drop` a no-op.
     pub async fn finish(&mut self, summary: dto::ImportSummary) {
         let mut guard = self.state.lock().await;
         guard.last_summary = Some(summary);
@@ -141,12 +123,10 @@ impl Drop for RunningGuard<'_> {
         if self.spent {
             return;
         }
-        // Fallback for early returns (`BAD_GATEWAY`) and panic unwind: clear the
-        // flag without holding up the dropping task. `try_lock` is safe here
-        // because a running import does not hold the mutex between `acquire` and
-        // `finish`; the only contender is a brief [`status`] read, so this
-        // virtually always succeeds. If it ever does not, a process restart
-        // clears the flag (see ADR 0002).
+        // Fallback for early returns and panic unwind. `try_lock` cannot
+        // deadlock because no path holds the mutex between `acquire` and
+        // `finish`; if it does fail, a process restart clears the flag
+        // (see ADR 0002).
         if let Ok(mut guard) = self.state.try_lock() {
             guard.running = false;
         }
@@ -233,13 +213,7 @@ pub async fn import(
 }
 
 /// `GET /jellyfin/import/status`: always `200` with the current
-/// [`dto::ImportStatus`] (R5).
-///
-/// Uses `lock().await`, not `try_lock` (R8). [`import`] does not hold the mutex
-/// across its external awaits, so this only blocks for the brief windows where
-/// `acquire` or [`RunningGuard::finish`] are flipping the flag. A poll therefore
-/// observes `running` while an import is in flight and reads `last_summary` from
-/// the last completed run, even mid-import.
+/// [`dto::ImportStatus`].
 #[axum::debug_handler]
 pub async fn status(
     State(AppState { import_state, .. }): State<AppState>,
@@ -261,54 +235,40 @@ enum Outcome {
     Skipped,
 }
 
-/// Decision for the existing-album-by-MBID lookup phase.
-///
-/// Transient: returned by `decide_existing_mbid` and consumed by the caller's
-/// match in the next statement, so the 216-byte `Link` variant is fine despite
-/// the size gap with `Skip`/`Proceed`.
+// `Link` dwarfs the other variants, but the value lives only until the
+// caller's match consumes it.
 #[derive(Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 enum ExistingMbidDecision {
-    /// An album row already has a Jellyfin ID; nothing to do.
     Skip,
-    /// An album row exists but lacks a Jellyfin ID; link it.
     Link {
         existing: album::Model,
         jellyfin_id: String,
     },
-    /// No row by MBID; proceed to the Tidal search path.
     Proceed,
 }
 
-/// Decision for the artist upsert phase.
 #[derive(Debug, PartialEq)]
 enum ArtistDecision {
-    /// Existing artist row; link it to MusicBrainz by setting its missing
-    /// `musicbrainz_artist_id`.
     LinkMusicBrainz {
         existing: artist::Model,
         mb_artist_id: String,
     },
-    /// No artist row; insert a new one.
     Insert {
         id: String,
         name: String,
         mb_artist_id: Option<String>,
     },
-    /// Existing artist row already complete (or no MB artist ID to link).
     Noop,
 }
 
-/// Decision for the album insert/link phase.
 #[derive(Debug, PartialEq)]
 enum AlbumDecision {
-    /// A row with this Tidal ID exists; link Jellyfin/MB release group IDs onto it.
     LinkExisting {
         existing: album::Model,
         jellyfin_id: Option<String>,
         musicbrainz_release_group_id: Option<String>,
     },
-    /// No row; create a new album keyed by the Tidal ID.
     Create {
         id: String,
         artist_id: String,
@@ -320,10 +280,6 @@ enum AlbumDecision {
     },
 }
 
-/// Decide what to do given an existing album row looked up by MBID.
-///
-/// Pure: takes only plain data (the row and the Jellyfin album) and returns
-/// plain data. No I/O, no handles to stateful services.
 fn decide_existing_mbid(
     existing_by_mbid: Option<album::Model>,
     jf_album: &crate::services::jellyfin::JellyfinAlbum,
@@ -338,10 +294,6 @@ fn decide_existing_mbid(
     }
 }
 
-/// Decide what to do for the artist row keyed by the Tidal artist ID.
-///
-/// Pure: takes only plain data and returns plain data. No I/O, no handles to
-/// stateful services.
 fn decide_artist(
     existing_artist: Option<artist::Model>,
     tidal_artist: &crate::services::tidal::TidalArtist,
@@ -367,12 +319,6 @@ fn decide_artist(
     }
 }
 
-/// Decide whether to link an existing album row (found by Tidal ID) or create
-/// a new one.
-///
-/// Pure: takes only plain data and returns plain data. No I/O, no handles to
-/// stateful services. The shell is responsible for translating
-/// `LinkExisting`/`Create` into `ActiveModel` writes.
 #[allow(clippy::too_many_arguments)]
 fn decide_album_insert(
     existing_by_tidal_id: Option<album::Model>,
@@ -416,9 +362,6 @@ fn decide_album_insert(
 }
 
 /// Resolve a single Jellyfin album to a Tidal-keyed `album` row.
-///
-/// Thin I/O shell: fetches rows and service data, delegates each branching
-/// decision to a pure function, then translates the decision into DB writes.
 async fn resolve_album(
     db: &sea_orm::DatabaseConnection,
     musicbrainz: &crate::services::musicbrainz::Musicbrainz,
@@ -427,7 +370,6 @@ async fn resolve_album(
     mb_release_group_id: String,
     mb_artist_id: Option<String>,
 ) -> Result<Outcome, String> {
-    // 1. Look up an existing album by its MusicBrainz release group ID and decide.
     let existing_by_mbid = album::Entity::find()
         .filter(album::Column::MusicbrainzReleaseGroupId.eq(mb_release_group_id.clone()))
         .one(db)
@@ -454,7 +396,6 @@ async fn resolve_album(
         ExistingMbidDecision::Proceed => {}
     }
 
-    // 2. No row by MBID. Fetch the MB release group for title + artist.
     let mb_rg = musicbrainz
         .get_release_group(&mb_release_group_id)
         .await
@@ -477,7 +418,6 @@ async fn resolve_album(
         .map(|c| c.name.clone())
         .ok_or_else(|| "release group has no artist credit".to_string())?;
 
-    // 3. Search Tidal by "{artist} {title}".
     let query = format!("{artist_name} {title}");
     let first_hit = {
         let mut tidal = tidal.lock().await;
@@ -491,7 +431,6 @@ async fn resolve_album(
         })?
     };
 
-    // 4. Follow up with GET /albums/{id}?include=artists for the Tidal artist.
     let tidal_artists = {
         let mut tidal = tidal.lock().await;
         tidal.get_album_artists(&first_hit.id).await.map_err(|e| {
@@ -504,7 +443,6 @@ async fn resolve_album(
         .next()
         .ok_or_else(|| "tidal album has no artists".to_string())?;
 
-    // 5. Upsert the artist row keyed by Tidal artist ID.
     let existing_artist = artist::Entity::find_by_id(tidal_artist.id.clone())
         .one(db)
         .await
@@ -545,8 +483,8 @@ async fn resolve_album(
         ArtistDecision::Noop => {}
     }
 
-    // 6. Insert the album row, or link it if a row with this Tidal ID already
-    //    exists (e.g. created earlier via the Tidal-by-ID creation route).
+    // A row with this Tidal ID may already exist, created earlier via the
+    // Tidal-by-ID creation route; link it instead of inserting a duplicate.
     let existing_by_tidal_id = album::Entity::find_by_id(first_hit.id.clone())
         .one(db)
         .await
@@ -629,14 +567,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tokio::sync::Mutex;
-
-    // --- RunningGuard ---
-
-    // The guard does not hold the mutex between `acquire` and `Drop`; it only
-    // locks briefly to flip `running` on `acquire` and off `Drop`. So reading
-    // `running` while the guard is live is a separate `lock().await`, which is
-    // safe under the single-threaded `#[tokio::test]` runtime because no lock is
-    // held across the await.
 
     #[tokio::test]
     async fn running_guard_marks_running_while_held() {
@@ -755,8 +685,6 @@ mod tests {
         }
     }
 
-    // --- decide_existing_mbid ---
-
     #[test]
     fn existing_mbid_none_proceeds() {
         assert_eq!(
@@ -785,8 +713,6 @@ mod tests {
             },
         );
     }
-
-    // --- decide_artist ---
 
     #[test]
     fn artist_none_inserts_with_mbid() {
@@ -846,8 +772,6 @@ mod tests {
             ArtistDecision::Noop,
         );
     }
-
-    // --- decide_album_insert ---
 
     #[test]
     fn album_none_creates() {

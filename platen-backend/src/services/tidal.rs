@@ -171,7 +171,6 @@ impl Tidal {
             .collect()
     }
 
-    /// `GET /artists/{id}` -> single artist resource.
     pub async fn get_artist(&mut self, id: &str) -> Result<TidalArtist, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/artists/{id}");
         let resp = self.send_with_retry(self.client.get(url)).await?;
@@ -188,7 +187,6 @@ impl Tidal {
         })
     }
 
-    /// `GET /albums/{id}` -> single album resource.
     pub async fn get_album(&mut self, id: &str) -> Result<TidalAlbum, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}");
         let resp = self.send_with_retry(self.client.get(url)).await?;
@@ -202,14 +200,11 @@ impl Tidal {
         Ok(TidalAlbum::from(resource.id, resource.attributes))
     }
 
-    /// Exhausts `GET /artists/{id}/relationships/albums?include=albums` across
-    /// Tidal's cursor pages, returning the full set of albums.
-    ///
-    /// `GET /artists/{id}?include=albums` exposes no paging parameter, so it only
-    /// returns Tidal's default first page. The relationship endpoint pages via
-    /// `links.next` (a relative path carrying an opaque `page[cursor]`). The loop
-    /// follows `links.next` until it is absent, or after `MAX_PAGES` requests as
-    /// a safety cap.
+    /// Follows `links.next` cursor pages of
+    /// `GET /artists/{id}/relationships/albums?include=albums` until exhausted
+    /// or `MAX_PAGES` is hit. The plain `GET /artists/{id}?include=albums`
+    /// endpoint exposes no paging parameter and returns only the first page,
+    /// which is why this goes through the relationship endpoint instead.
     pub async fn get_artist_albums(&mut self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
         const MAX_PAGES: usize = 50;
         let mut albums: Vec<TidalAlbum> = Vec::new();
@@ -248,7 +243,6 @@ impl Tidal {
         Ok(albums)
     }
 
-    /// `GET /albums/{id}?include=artists` -> album with its artists.
     pub async fn get_album_artists(&mut self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=artists");
         let resp = self.send_with_retry(self.client.get(url)).await?;
@@ -281,7 +275,6 @@ impl Tidal {
             .collect()
     }
 
-    /// `GET /searchResults?filter[query]=...&include=artists` -> artist search.
     pub async fn search_artists(&mut self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let encoded = urlencoding::encode(query);
         let url = format!("{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists");
@@ -501,10 +494,6 @@ mod tidal_response {
 
     // ---- Compound documents (include=...) ----
 
-    /// `GET /artists/{id}/relationships/albums?include=albums` response: the
-    /// `data` array holds album resource identifiers, `included` holds the full
-    /// album resources, and `links.next` is the relative path to the next cursor
-    /// page (absent on the last page).
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
     pub struct ArtistAlbumsRelationshipDocument {
@@ -584,11 +573,9 @@ mod tidal_response {
 mod tests {
     use super::tidal_response::{AlbumSearchIncludedAttributes, ArtistAlbumsRelationshipDocument};
 
-    /// Regression: `AlbumSearchIncludedAttributes` used `#[serde(rename =
-    /// "camelCase")]`, which renames the type, not the fields. Serde looked for
-    /// `release_date` in the JSON while Tidal sends `releaseDate`, so every
-    /// snake_case field silently deserialized to `None`. The fix is `rename_all`.
-    /// This test pins the camelCase field names Tidal actually sends.
+    /// Regression: `#[serde(rename = "camelCase")]` renames the type, not the
+    /// fields, so Tidal's `releaseDate` silently deserialized to `None`.
+    /// `rename_all` is the fix; this test pins the camelCase field names.
     #[test]
     fn deserializes_camel_case_attributes() {
         let json = r#"
@@ -630,11 +617,8 @@ mod tests {
         assert_eq!(attr.r#type, "SINGLE");
     }
 
-    /// Regression: `GET /artists/{id}/relationships/albums?include=albums`
-    /// returned `release_date: null` on the add-album page because the included
-    /// album attributes deserialized with snake_case field names against Tidal's
-    /// camelCase payload. This test feeds the exact shape `get_artist_albums`
-    /// deserializes and asserts the date survives the round trip.
+    /// Regression for the same snake_case bug as above, against the exact
+    /// shape `get_artist_albums` deserializes.
     #[test]
     fn deserializes_artist_albums_relationship_document() {
         let json = r#"
@@ -703,10 +687,6 @@ mod tests {
 
         let attr: AlbumSearchIncludedAttributes = serde_json::from_str(json).unwrap();
 
-        // Under `rename_all = "camelCase"`, `release_date` in the JSON does
-        // not map to the `release_date` Rust field. The field stays `None`.
-        // This is the expected behavior and documents that the struct relies
-        // on camelCase input from Tidal.
         assert_eq!(attr.title, "Michelle (Take 1)");
         assert_eq!(attr.release_date, None);
     }

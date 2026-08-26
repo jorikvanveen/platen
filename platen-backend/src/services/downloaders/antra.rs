@@ -205,7 +205,7 @@ impl Antra {
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct JobStatusResponse {
-    status: String, // complete, zipping, downloading
+    status: String,
     done: usize,
     failed: usize,
     total: usize,
@@ -234,7 +234,9 @@ struct ResolveRequestBody {
 
 #[derive(Debug, Deserialize)]
 struct ResolveResponse {
-    pub track_count: usize, // There is much more but we dont need all of that to start the download
+    // The resolve endpoint returns more fields than this; track_count is the
+    // only one needed to create a job.
+    pub track_count: usize,
 }
 
 #[derive(Error, Debug)]

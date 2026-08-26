@@ -27,7 +27,6 @@ impl MigrationTrait for Migration {
             )
             .await?;
 
-        // Rebuild the per-column indexes to match the new names.
         manager
             .drop_index(Index::drop().name("artist-musicbrainz-id-idx").to_owned())
             .await?;
