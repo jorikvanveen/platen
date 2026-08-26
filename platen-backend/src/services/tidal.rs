@@ -1,9 +1,9 @@
 use base64::prelude::*;
 use chrono::Utc;
 use reqwest::{RequestBuilder, StatusCode};
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::time::sleep;
+use tokio::{sync::Mutex, time::sleep};
 
 use tidal_response::{
     AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData, AlbumSingleResource,
@@ -25,10 +25,15 @@ pub enum TidalError {
     AuthenticationFailed(StatusCode, String),
 }
 
-pub struct Tidal {
-    client: reqwest::Client,
+struct TidalAuth {
     token: Option<String>,
     expires_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Clone)]
+pub struct Tidal {
+    client: reqwest::Client,
+    auth: Arc<Mutex<TidalAuth>>,
     client_id: String,
     client_secret: String,
 }
@@ -39,21 +44,23 @@ impl Tidal {
             client: reqwest::ClientBuilder::new().build().expect(
                 "reqwest client build only fails on TLS misconfiguration, which is static here",
             ),
-            token: None,
-            expires_at: Default::default(),
+            auth: Arc::new(Mutex::new(TidalAuth {
+                token: None,
+                expires_at: Default::default(),
+            })),
             client_id,
             client_secret,
         }
     }
 
-    pub async fn login(&mut self) -> Result<(), TidalError> {
+    pub async fn login(&self) -> Result<(), TidalError> {
         self.ensure_token().await?;
         tracing::info!("Logged in to tidal");
         Ok(())
     }
 
     async fn send_with_retry(
-        &mut self,
+        &self,
         builder: RequestBuilder,
     ) -> Result<reqwest::Response, TidalError> {
         const MAX_RETRIES: u32 = 3;
@@ -82,7 +89,7 @@ impl Tidal {
                     retries += 1;
                 }
                 Ok(res) if res.status() == StatusCode::UNAUTHORIZED && !retried_auth => {
-                    self.token = None;
+                    self.auth.lock().await.token = None;
                     retried_auth = true;
                 }
                 Ok(res) => return Ok(res),
@@ -95,7 +102,7 @@ impl Tidal {
         }
     }
 
-    async fn get_oauth_token(&mut self) -> Result<String, TidalError> {
+    async fn get_oauth_token(&self) -> Result<String, TidalError> {
         let credentials =
             BASE64_STANDARD.encode(format!("{}:{}", self.client_id, self.client_secret));
 
@@ -121,25 +128,28 @@ impl Tidal {
             .map_err(|_| TidalError::UnexpectedResponse)?;
 
         let token = response.access_token;
-        self.token = Some(token.clone());
-        self.expires_at =
+        let mut auth = self.auth.lock().await;
+        auth.token = Some(token.clone());
+        auth.expires_at =
             chrono::Utc::now() + Duration::from_secs(response.expires_in.saturating_sub(60));
 
         tracing::info!("Authenticated with tidal");
         Ok(token)
     }
 
-    async fn ensure_token(&mut self) -> Result<String, TidalError> {
-        let now = chrono::Utc::now();
-        let cached = self.token.clone().filter(|_| self.expires_at > now);
-        if let Some(token) = cached {
-            return Ok(token);
+    async fn ensure_token(&self) -> Result<String, TidalError> {
+        {   
+            let auth = self.auth.lock().await;
+            let now = chrono::Utc::now();
+            if let Some(token) = auth.token.clone().filter(|_| auth.expires_at > now) {
+                return Ok(token);
+            }
         }
         self.get_oauth_token().await
     }
 
     pub async fn find_album(
-        &mut self,
+        &self,
         query: &str,
     ) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
         let release_query = urlencoding::encode(query);
@@ -171,7 +181,7 @@ impl Tidal {
             .collect()
     }
 
-    pub async fn get_artist(&mut self, id: &str) -> Result<TidalArtist, TidalError> {
+    pub async fn get_artist(&self, id: &str) -> Result<TidalArtist, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/artists/{id}");
         let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
@@ -187,7 +197,7 @@ impl Tidal {
         })
     }
 
-    pub async fn get_album(&mut self, id: &str) -> Result<TidalAlbum, TidalError> {
+    pub async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}");
         let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
@@ -205,7 +215,7 @@ impl Tidal {
     /// or `MAX_PAGES` is hit. The plain `GET /artists/{id}?include=albums`
     /// endpoint exposes no paging parameter and returns only the first page,
     /// which is why this goes through the relationship endpoint instead.
-    pub async fn get_artist_albums(&mut self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
+    pub async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
         const MAX_PAGES: usize = 50;
         let mut albums: Vec<TidalAlbum> = Vec::new();
         let mut next: Option<String> = None;
@@ -243,7 +253,7 @@ impl Tidal {
         Ok(albums)
     }
 
-    pub async fn get_album_artists(&mut self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
+    pub async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=artists");
         let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
@@ -275,7 +285,7 @@ impl Tidal {
             .collect()
     }
 
-    pub async fn search_artists(&mut self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
+    pub async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let encoded = urlencoding::encode(query);
         let url = format!("{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists");
 

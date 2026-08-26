@@ -54,13 +54,10 @@ pub async fn create(
     Path(id): Path<String>,
 ) -> Result<Json<dto::Artist>, StatusCode> {
     info!("Creating artist {id}");
-    let tidal_artist = {
-        let mut tidal = tidal.lock().await;
-        tidal
-            .get_artist(&id)
-            .await
-            .map_err(utils::map_tidal_error)?
-    };
+    let tidal_artist = tidal
+        .get_artist(&id)
+        .await
+        .map_err(utils::map_tidal_error)?;
 
     let artist_model = artist::ActiveModel {
         id: ActiveValue::Set(tidal_artist.id),

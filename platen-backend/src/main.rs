@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     Router,
     routing::{get, post},
@@ -11,7 +9,7 @@ use figment::{
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
-use tokio::{net::TcpListener, sync::Mutex};
+use tokio::net::TcpListener;
 
 use crate::services::{
     downloaders::antra::Antra, import::ImportTracker, jellyfin::Jellyfin, musicbrainz::Musicbrainz,
@@ -48,11 +46,11 @@ async fn main() -> color_eyre::Result<()> {
         .extract()?;
     tracing::info!("Loaded configuration");
 
-    let tidal = Arc::new(Mutex::new(Tidal::new(
+    let tidal = Tidal::new(
         config.tidal_client_id.clone(),
         config.tidal_client_secret.clone(),
-    )));
-    tidal.lock().await.login().await?;
+    );
+    tidal.login().await?;
 
     let antra = Antra::new(&config);
     antra.login().await?;
@@ -113,7 +111,7 @@ struct AppState {
     musicbrainz: Musicbrainz,
     jellyfin: Jellyfin,
     import: ImportTracker,
-    tidal: Arc<Mutex<Tidal>>,
+    tidal: Tidal,
     antra: Antra,
     db: DatabaseConnection,
     config: Config,

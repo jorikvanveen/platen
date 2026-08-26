@@ -2,3 +2,4 @@
 - Never edit generated files directly. Find a script or ask the user.
 - If you need to generate a migration use the SeaORM CLI
 - No panicking, if something is unexpected return an error
+- If a comment is present, it should answer a "why" question. Never a "what" or "how" question.

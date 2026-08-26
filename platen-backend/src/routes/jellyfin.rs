@@ -325,7 +325,7 @@ fn decide_album_insert(
 async fn resolve_album(
     db: &sea_orm::DatabaseConnection,
     musicbrainz: &crate::services::musicbrainz::Musicbrainz,
-    tidal: &std::sync::Arc<tokio::sync::Mutex<crate::services::tidal::Tidal>>,
+    tidal: &crate::services::tidal::Tidal,
     jf_album: &crate::services::jellyfin::JellyfinAlbum,
     mb_release_group_id: String,
     mb_artist_id: Option<String>,
@@ -380,7 +380,6 @@ async fn resolve_album(
 
     let query = format!("{artist_name} {title}");
     let first_hit = {
-        let mut tidal = tidal.lock().await;
         let hits = tidal.find_album(&query).await.map_err(|e| {
             error!("Tidal find_album failed: {e:#?}");
             "tidal search failed".to_string()
@@ -391,13 +390,13 @@ async fn resolve_album(
         })?
     };
 
-    let tidal_artists = {
-        let mut tidal = tidal.lock().await;
-        tidal.get_album_artists(&first_hit.id).await.map_err(|e| {
+    let tidal_artists = tidal
+        .get_album_artists(&first_hit.id)
+        .await
+        .map_err(|e| {
             error!("Tidal get_album_artists failed: {e:#?}");
             "tidal album fetch failed".to_string()
-        })?
-    };
+        })?;
     let tidal_artist = tidal_artists
         .into_iter()
         .next()

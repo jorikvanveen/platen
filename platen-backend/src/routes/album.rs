@@ -86,13 +86,10 @@ pub async fn create(
         return Ok(Json(existing.into()));
     }
 
-    let tidal_album = {
-        let mut tidal = tidal.lock().await;
-        tidal
-            .get_album(&album_id)
-            .await
-            .map_err(crate::routes::utils::map_tidal_error)?
-    };
+    let tidal_album = tidal
+        .get_album(&album_id)
+        .await
+        .map_err(crate::routes::utils::map_tidal_error)?;
 
     let release_date = tidal_album
         .release_date
@@ -231,18 +228,15 @@ pub async fn refresh_release_dates(
         skipped: 0,
     };
     for album in albums {
-        let tidal_album = {
-            let mut tidal = tidal.lock().await;
-            match tidal.get_album(&album.id).await {
-                Ok(album) => album,
-                Err(e) => {
-                    error!(
-                        "Could not fetch release date for album {}: {e:#?}",
-                        album.id
-                    );
-                    summary.skipped += 1;
-                    continue;
-                }
+        let tidal_album = match tidal.get_album(&album.id).await {
+            Ok(album) => album,
+            Err(e) => {
+                error!(
+                    "Could not fetch release date for album {}: {e:#?}",
+                    album.id
+                );
+                summary.skipped += 1;
+                continue;
             }
         };
         let Some(date) = tidal_album.release_date.as_deref() else {

@@ -64,13 +64,10 @@ pub async fn search_artists(
     Query(SearchQuery { query }): Query<SearchQuery>,
 ) -> Result<Json<Vec<dto::TidalArtist>>, StatusCode> {
     info!("Searching tidal for artist: {query}");
-    let artists = {
-        let mut tidal = tidal.lock().await;
-        tidal
-            .search_artists(&query)
-            .await
-            .map_err(map_tidal_error)?
-    };
+    let artists = tidal
+        .search_artists(&query)
+        .await
+        .map_err(map_tidal_error)?;
     Ok(Json(artists.into_iter().map(Into::into).collect()))
 }
 
@@ -80,12 +77,9 @@ pub async fn get_artist_albums(
     Path(id): Path<String>,
 ) -> Result<Json<Vec<dto::TidalAlbum>>, StatusCode> {
     info!("Fetching tidal artist {id} with albums");
-    let albums = {
-        let mut tidal = tidal.lock().await;
-        tidal
-            .get_artist_albums(&id)
-            .await
-            .map_err(map_tidal_error)?
-    };
+    let albums = tidal
+        .get_artist_albums(&id)
+        .await
+        .map_err(map_tidal_error)?;
     Ok(Json(albums.into_iter().map(Into::into).collect()))
 }
