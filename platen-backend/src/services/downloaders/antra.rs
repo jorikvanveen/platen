@@ -1,5 +1,8 @@
 use content_disposition::parse_content_disposition;
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 use tokio::{
     fs::{self, File},
     io::{self, AsyncWriteExt},
@@ -127,7 +130,7 @@ impl Antra {
             return Err(AntraError::CantGetStatus);
         }
 
-        let text = dbg!(resp.text().await?);
+        let text = resp.text().await?;
         Ok(serde_json::from_str(&text)?)
     }
 
@@ -202,6 +205,123 @@ impl Antra {
     }
 }
 
+// Antra's ZIP archives arrive in folders whose names do not reliably match
+// the catalog artist, and the media server reads those folder names as
+// artist names, so the archive's structure is never trusted: the files land
+// in the catalog-derived destination (ADR 0003). Observed archives hold two
+// nested folders above one flat directory of tracks, so placement navigates
+// that shape and fails loudly on anything else.
+//
+// The extraction parent is injected rather than read from temp_dir() inside
+// so tests can point it at their workspace and assert it ends up empty.
+async fn place_archive(
+    archive: &Path,
+    destination: &Path,
+    extraction_parent: &Path,
+) -> Result<(), AntraError> {
+    let extraction_dir = tempfile::Builder::new()
+        .prefix("platen-extract-")
+        .tempdir_in(extraction_parent)?;
+
+    let placement = extract_and_place(extraction_dir.path(), archive, destination).await;
+
+    // TempDir's Drop cleanup is blocking I/O, so the directory is removed
+    // through tokio's fs instead.
+    let _ = fs::remove_dir_all(extraction_dir.path()).await;
+
+    match placement {
+        Ok(()) => {
+            fs::remove_file(archive).await?;
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::remove_file(archive).await;
+            Err(error)
+        }
+    }
+}
+
+async fn extract_and_place(
+    extraction_root: &Path,
+    archive: &Path,
+    destination: &Path,
+) -> Result<(), AntraError> {
+    let exit_status = Command::new("unzip")
+        .arg(archive)
+        .arg("-d")
+        .arg(extraction_root)
+        .spawn()?
+        .wait()
+        .await?;
+    if !exit_status.success() {
+        return Err(AntraError::UnzipFailed);
+    }
+
+    let album_directory = find_album_directory(extraction_root).await?;
+    copy_files_flat(&album_directory, destination).await
+}
+
+async fn find_album_directory(extraction_root: &Path) -> Result<PathBuf, AntraError> {
+    let artist_directory = single_subdirectory(extraction_root).await?;
+    let album_directory = single_subdirectory(&artist_directory).await?;
+
+    // Disc subfolders would be silently dropped by the flat copy, so their
+    // presence fails the placement instead.
+    match directory_shape(&album_directory).await? {
+        (None, true) => Ok(album_directory),
+        (None, false) => Err(AntraError::EmptyArchive),
+        (Some(_), _) => Err(AntraError::UnexpectedArchiveShape),
+    }
+}
+
+// The two levels above the tracks must each hold exactly one directory and
+// nothing else: a stray file would be silently dropped by the flat copy, and
+// a second directory would make the album directory ambiguous.
+async fn single_subdirectory(directory: &Path) -> Result<PathBuf, AntraError> {
+    match directory_shape(directory).await? {
+        (Some(subdirectory), false) => Ok(subdirectory),
+        (Some(_), true) => Err(AntraError::UnexpectedArchiveShape),
+        (None, true) => Err(AntraError::NoAlbumDirectory),
+        (None, false) => Err(AntraError::EmptyArchive),
+    }
+}
+
+// Every level of the archive is classified by the same question: does this
+// directory hold one subdirectory, files, or both? A second subdirectory is
+// unexpected at every level, so the walk fails on it directly.
+async fn directory_shape(directory: &Path) -> Result<(Option<PathBuf>, bool), AntraError> {
+    let mut entries = fs::read_dir(directory).await?;
+    let mut subdirectory = None;
+    let mut holds_file = false;
+
+    while let Some(entry) = entries.next_entry().await? {
+        if entry.file_type().await?.is_dir() {
+            if subdirectory.is_some() {
+                return Err(AntraError::UnexpectedArchiveShape);
+            }
+            subdirectory = Some(entry.path());
+        } else {
+            holds_file = true;
+        }
+    }
+
+    Ok((subdirectory, holds_file))
+}
+
+async fn copy_files_flat(album_directory: &Path, destination: &Path) -> Result<(), AntraError> {
+    fs::create_dir_all(destination).await?;
+
+    let mut entries = fs::read_dir(album_directory).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let destination_path = destination.join(entry.file_name());
+        if destination_path.exists() {
+            continue;
+        }
+        fs::copy(entry.path(), &destination_path).await?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
 struct JobStatusResponse {
@@ -269,8 +389,19 @@ pub enum AntraError {
     #[error("Antra returned a file type that does not match the album type")]
     UnexpectedDownloadType,
 
-    #[error("Failed to unzip download")]
+    #[error("Could not unzip the downloaded archive")]
     UnzipFailed,
+
+    #[error("The downloaded archive contains no files")]
+    EmptyArchive,
+
+    #[error(
+        "The downloaded archive has no album directory: a folder above the tracks holds only files"
+    )]
+    NoAlbumDirectory,
+
+    #[error("The downloaded archive does not have the expected shape of one flat album directory")]
+    UnexpectedArchiveShape,
 }
 
 impl Downloader for Antra {
@@ -320,21 +451,302 @@ impl Downloader for Antra {
             return Self::move_single_to_destination(download_path, destination).await;
         }
 
-        tracing::info!("Unzipping");
-        let exit_status = Command::new("unzip")
-            .arg("-n")
-            .arg(&download_path)
-            .arg("-d")
-            .arg(destination)
-            .spawn()?
-            .wait()
-            .await?;
-        if !exit_status.success() {
-            let _ = fs::remove_file(&download_path).await;
-            return Err(AntraError::UnzipFailed);
+        let extraction_parent = std::env::temp_dir();
+        place_archive(&download_path, destination, &extraction_parent).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command as SyncCommand;
+
+    // Real zips, because placement extracts with the real unzip binary.
+    fn build_archive(working_dir: &Path, archive: &Path, entries: &[&str]) {
+        let status = SyncCommand::new("zip")
+            .arg("-q")
+            .arg("-r")
+            .arg(archive)
+            .args(entries)
+            .current_dir(working_dir)
+            .status()
+            .expect("the zip tool is available on this machine");
+        assert!(status.success(), "could not build the test archive");
+    }
+
+    // Every entry is asserted to be a file, so an archive-derived folder
+    // fails the test instead of hiding among the names.
+    async fn flat_file_names(destination: &Path) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut entries = fs::read_dir(destination).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            assert!(
+                entry.file_type().await.unwrap().is_file(),
+                "{} is not a file",
+                entry.path().display()
+            );
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        names
+    }
+
+    struct Download {
+        workspace: tempfile::TempDir,
+        archive: PathBuf,
+        extraction_parent: PathBuf,
+        destination: PathBuf,
+    }
+
+    impl Download {
+        fn new() -> Self {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path().to_path_buf();
+            Self {
+                archive: root.join("download.zip"),
+                extraction_parent: root.join("extraction"),
+                destination: root.join("BLCKK").join("Duality (2024)"),
+                workspace,
+            }
         }
 
-        fs::remove_file(download_path).await?;
-        Ok(())
+        fn root(&self) -> &Path {
+            self.workspace.path()
+        }
+
+        async fn write_source_file(&self, relative: &str, contents: &str) {
+            let path = self.root().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).await.unwrap();
+            fs::write(path, contents).await.unwrap();
+        }
+
+        async fn build_archive_from(&self, entries: &[&str]) {
+            fs::create_dir_all(&self.extraction_parent).await.unwrap();
+            build_archive(self.root(), &self.archive, entries);
+        }
+
+        async fn place(&self) -> Result<(), AntraError> {
+            place_archive(&self.archive, &self.destination, &self.extraction_parent).await
+        }
+
+        // The extraction parent must end up empty because the temporary
+        // directory is removed on success and on failure alike.
+        async fn assert_extraction_parent_empty(&self) {
+            let mut entries = fs::read_dir(&self.extraction_parent).await.unwrap();
+            assert!(
+                entries.next_entry().await.unwrap().is_none(),
+                "the extraction parent is not empty"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn copies_the_album_directorys_files_flat_into_the_destination() {
+        let download = Download::new();
+        let archive_folder = "BLCKK, ISSBROKIE/Duality (2024) [FLAC]";
+        download
+            .write_source_file(
+                &format!("{archive_folder}/1-01 North Star.flac"),
+                "disc 1 track",
+            )
+            .await;
+        download
+            .write_source_file(
+                &format!("{archive_folder}/2-21 Light Years.flac"),
+                "disc 2 track",
+            )
+            .await;
+        download.build_archive_from(&["BLCKK, ISSBROKIE"]).await;
+
+        download.place().await.unwrap();
+
+        assert_eq!(
+            flat_file_names(&download.destination).await,
+            ["1-01 North Star.flac", "2-21 Light Years.flac"]
+        );
+        assert_eq!(
+            fs::read_to_string(download.destination.join("2-21 Light Years.flac"))
+                .await
+                .unwrap(),
+            "disc 2 track"
+        );
+
+        assert!(!download.archive.exists());
+        download.assert_extraction_parent_empty().await;
+    }
+
+    #[tokio::test]
+    async fn navigates_the_artist_album_shape() {
+        let download = Download::new();
+        download
+            .write_source_file(
+                "BLCKK, ISSBROKIE/Duality (2024) [FLAC]/1-01 North Star.flac",
+                "disc 1 track",
+            )
+            .await;
+        download.build_archive_from(&["BLCKK, ISSBROKIE"]).await;
+
+        download.place().await.unwrap();
+
+        assert_eq!(
+            flat_file_names(&download.destination).await,
+            ["1-01 North Star.flac"]
+        );
+    }
+
+    #[tokio::test]
+    async fn skips_files_that_already_exist_in_the_destination() {
+        let download = Download::new();
+        let archive_folder = "BLCKK, ISSBROKIE/Duality (2024) [FLAC]";
+        download
+            .write_source_file(
+                &format!("{archive_folder}/1-01 North Star.flac"),
+                "disc 1 track",
+            )
+            .await;
+        download
+            .write_source_file(
+                &format!("{archive_folder}/2-21 Light Years.flac"),
+                "disc 2 track",
+            )
+            .await;
+        download.build_archive_from(&["BLCKK, ISSBROKIE"]).await;
+
+        fs::create_dir_all(&download.destination).await.unwrap();
+        fs::write(
+            download.destination.join("1-01 North Star.flac"),
+            "already there",
+        )
+        .await
+        .unwrap();
+
+        download.place().await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(download.destination.join("1-01 North Star.flac"))
+                .await
+                .unwrap(),
+            "already there"
+        );
+        assert_eq!(
+            fs::read_to_string(download.destination.join("2-21 Light Years.flac"))
+                .await
+                .unwrap(),
+            "disc 2 track"
+        );
+    }
+
+    #[tokio::test]
+    async fn fails_when_the_archive_contains_no_files() {
+        let download = Download::new();
+        fs::create_dir_all(download.root().join("empty album directory"))
+            .await
+            .unwrap();
+        download
+            .build_archive_from(&["empty album directory"])
+            .await;
+
+        let error = download.place().await.unwrap_err();
+
+        assert!(matches!(error, AntraError::EmptyArchive), "{error:?}");
+        assert!(!download.destination.exists());
+        download.assert_extraction_parent_empty().await;
+        assert!(!download.archive.exists());
+    }
+
+    #[tokio::test]
+    async fn fails_when_the_deepest_level_of_the_archive_is_a_file() {
+        let download = Download::new();
+        download
+            .write_source_file("1-01 North Star.flac", "disc 1 track")
+            .await;
+        download.build_archive_from(&["1-01 North Star.flac"]).await;
+
+        let error = download.place().await.unwrap_err();
+
+        assert!(matches!(error, AntraError::NoAlbumDirectory), "{error:?}");
+        assert!(!download.destination.exists());
+        download.assert_extraction_parent_empty().await;
+        assert!(!download.archive.exists());
+    }
+
+    #[tokio::test]
+    async fn fails_when_the_artist_directory_holds_a_stray_file() {
+        let download = Download::new();
+        let archive_folder = "BLCKK, ISSBROKIE/Duality (2024) [FLAC]";
+        download
+            .write_source_file(
+                &format!("{archive_folder}/1-01 North Star.flac"),
+                "disc 1 track",
+            )
+            .await;
+        download
+            .write_source_file("BLCKK, ISSBROKIE/cover.jpg", "stray file")
+            .await;
+        download.build_archive_from(&["BLCKK, ISSBROKIE"]).await;
+
+        let error = download.place().await.unwrap_err();
+
+        assert!(
+            matches!(error, AntraError::UnexpectedArchiveShape),
+            "{error:?}"
+        );
+        assert!(!download.destination.exists());
+        download.assert_extraction_parent_empty().await;
+    }
+
+    #[tokio::test]
+    async fn fails_when_the_album_directory_holds_a_disc_subfolder() {
+        let download = Download::new();
+        let archive_folder = "BLCKK, ISSBROKIE/Duality (2024) [FLAC]";
+        download
+            .write_source_file(
+                &format!("{archive_folder}/disc 1/1-01 North Star.flac"),
+                "disc 1",
+            )
+            .await;
+        download
+            .write_source_file(
+                &format!("{archive_folder}/disc 2/2-21 Light Years.flac"),
+                "disc 2",
+            )
+            .await;
+        download.build_archive_from(&["BLCKK, ISSBROKIE"]).await;
+
+        let error = download.place().await.unwrap_err();
+
+        assert!(
+            matches!(error, AntraError::UnexpectedArchiveShape),
+            "{error:?}"
+        );
+        assert!(!download.destination.exists());
+        download.assert_extraction_parent_empty().await;
+    }
+
+    #[tokio::test]
+    async fn fails_when_files_sit_outside_the_album_directory() {
+        let download = Download::new();
+        let archive_folder = "BLCKK, ISSBROKIE/Duality (2024) [FLAC]";
+        download
+            .write_source_file(
+                &format!("{archive_folder}/1-01 North Star.flac"),
+                "disc 1 track",
+            )
+            .await;
+        download
+            .write_source_file("cover.jpg", "not part of a flat album directory")
+            .await;
+        download
+            .build_archive_from(&["BLCKK, ISSBROKIE", "cover.jpg"])
+            .await;
+
+        let error = download.place().await.unwrap_err();
+
+        assert!(
+            matches!(error, AntraError::UnexpectedArchiveShape),
+            "{error:?}"
+        );
+        assert!(!download.destination.exists());
+        download.assert_extraction_parent_empty().await;
     }
 }

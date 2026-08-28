@@ -2792,6 +2792,7 @@ dependencies = [
  "sea-schema 0.16.2",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

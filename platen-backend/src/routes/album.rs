@@ -324,22 +324,18 @@ pub async fn download(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
+    // The library layout is derived from the catalog for every release type,
+    // never from the archive's own structure (ADR 0003). A release year of 0
+    // means the date has not been refreshed from Tidal yet; the current year
+    // keeps the directory from being named "(0)" in the meantime.
     let music_dir = PathBuf::from(config.music_dir);
-    let destination = if album
-        .album_type
-        .as_deref()
-        .is_some_and(|album_type| album_type.eq_ignore_ascii_case("SINGLE"))
-    {
-        let release_year = if album.release_year == 0 {
-            chrono::Utc::now().year()
-        } else {
-            album.release_year
-        };
-        let album_directory = format!("{} ({})", album.title, release_year);
-        music_dir.join(&artist.name).join(album_directory)
+    let release_year = if album.release_year == 0 {
+        chrono::Utc::now().year()
     } else {
-        music_dir
+        album.release_year
     };
+    let album_directory = format!("{} ({})", album.title, release_year);
+    let destination = music_dir.join(&artist.name).join(album_directory);
 
     antra
         .download_album(&album, &destination)
