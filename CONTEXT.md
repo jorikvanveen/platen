@@ -13,19 +13,27 @@ _Avoid_: library, collection
 
 **Artist**:
 A music artist represented in the catalog. Identified by its Tidal artist ID
-and owning one or more Albums.
+and credited on one or more Albums. An Artist enters the catalog only as a
+side effect of adding an Album it is credited on; it is never created on its
+own, and it cannot be deleted while any Album credits it.
 _Avoid_: musician, performer, act
 
-**Album artist**:
-The Artist an Album belongs to. An Album has exactly one, even when individual
-tracks credit additional artists; track-level credits are metadata on the
-tracks and never create catalog or library entities.
-_Avoid_: album artist credits, main artist, featured artist
+**Album credit**:
+An Artist credited on an Album. Every credited Artist becomes a catalog Artist
+linked to the Album; credits come from Tidal's album-level artist list, and
+track-level credits never create catalog entities. Credits are ordered; the
+first is the Primary artist.
+_Avoid_: album artist credits, featured artist
+
+**Primary artist**:
+The first credited Artist on an Album. Drives the Album's place in the library
+layout and any display that needs "the" artist.
+_Avoid_: main artist, album artist
 
 **Album**:
 A release represented in the catalog. Identified by its Tidal album ID and
-belonging to one Artist. A release may be an album, EP, or single. The name
-"Album" is the entity's name, not a claim that every one is a full-length
+credited to one or more Artists. A release may be an album, EP, or single. The
+name "Album" is the entity's name, not a claim that every one is a full-length
 album.
 _Avoid_: release, record
 

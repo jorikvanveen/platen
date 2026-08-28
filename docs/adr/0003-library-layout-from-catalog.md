@@ -10,3 +10,10 @@ internal structure as disposable; the archive is extracted to a temporary
 location and only its files are placed. The alternative, trusting or
 repairing the archive's layout, would keep the library at the mercy of a
 third party's tagging quirks.
+
+## Consequences
+
+- An Album credited to multiple Artists lives under its Primary artist's
+  directory only. Other credited Artists' pages show the album, but the
+  files exist in one place; duplicating audio directories would cause
+  Jellyfin to scan it twice.
