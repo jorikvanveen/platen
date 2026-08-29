@@ -60,6 +60,7 @@ mod tests {
             release_year: Set(2024),
             release_month: Set(Some(10)),
             release_day: Set(Some(4)),
+            ..Default::default()
         }
         .insert(&db)
         .await

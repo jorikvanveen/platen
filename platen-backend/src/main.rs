@@ -85,10 +85,6 @@ fn app_router(state: AppState) -> Router {
             get(routes::album::refresh_release_dates),
         )
         .route("/albums/{album_id}/download", post(routes::album::download))
-        .route(
-            "/artists/{artist_id}/albums/{album_id}/download",
-            post(routes::album::download_artist_scoped),
-        )
         .route("/tidal/search/artists", get(routes::tidal::search_artists))
         .route("/tidal/search/albums", get(routes::tidal::search_albums))
         .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))

@@ -13,6 +13,7 @@ pub struct Model {
     pub release_year: i32,
     pub release_month: Option<i32>,
     pub release_day: Option<i32>,
+    pub downloaded: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

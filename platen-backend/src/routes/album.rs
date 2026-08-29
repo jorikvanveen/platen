@@ -69,6 +69,7 @@ pub mod dto {
         pub release_year: i32,
         pub release_month: Option<i32>,
         pub release_day: Option<i32>,
+        pub downloaded: bool,
     }
 
     #[derive(Debug, Serialize, TS)]
@@ -79,15 +80,18 @@ pub mod dto {
     }
 }
 
-fn to_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
-    dto::Album {
-        id: model.id,
-        artists,
-        title: model.title,
-        album_type: model.album_type,
-        release_year: model.release_year,
-        release_month: model.release_month,
-        release_day: model.release_day,
+impl From<(album::Model, Vec<Artist>)> for dto::Album {
+    fn from((model, artists): (album::Model, Vec<Artist>)) -> Self {
+        Self {
+            id: model.id,
+            artists,
+            title: model.title,
+            album_type: model.album_type,
+            release_year: model.release_year,
+            release_month: model.release_month,
+            release_day: model.release_day,
+            downloaded: model.downloaded,
+        }
     }
 }
 
@@ -128,7 +132,7 @@ pub async fn create(
             error!("Db error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        return Ok(Json(to_dto(existing, artists)));
+        return Ok(Json((existing, artists).into()));
     }
 
     let tidal_album = tidal
@@ -153,6 +157,7 @@ pub async fn create(
         release_year: ActiveValue::Set(release_date.year),
         release_month: ActiveValue::Set(release_date.month),
         release_day: ActiveValue::Set(release_date.day),
+        ..Default::default()
     };
     let album_id_for_txn = album_id.clone();
     let model = db
@@ -187,7 +192,7 @@ pub async fn create(
         error!("Db error loading album credits: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    Ok(Json(to_dto(model, artists)))
+    Ok(Json((model, artists).into()))
 }
 
 /// Legacy artist-scoped creation path, kept so existing clients keep working.
@@ -250,13 +255,85 @@ pub(crate) fn parse_release_date(value: &str) -> Result<ReleaseDate, &'static st
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use migration::MigratorTrait;
-    use sea_orm::{ActiveModelTrait, Database, Set};
+    use reqwest::StatusCode;
+    use sea_orm::{ActiveModelTrait, Database, EntityTrait, Set};
+    use thiserror::Error;
 
     use super::{
-        ReleaseDate, credited_artists, parse_release_date, sanitize_filename_component, to_dto,
+        ReleaseDate, credited_artists, download_with, parse_release_date,
+        sanitize_filename_component,
     };
-    use crate::entity::{album, album_artist, artist};
+    use crate::{
+        entity::{album, album_artist, artist},
+        services::downloaders::Downloader,
+    };
+
+    #[derive(Debug, Error)]
+    #[error("test download failed")]
+    struct TestDownloadError;
+
+    struct TestDownloader {
+        result: Result<(), TestDownloadError>,
+    }
+
+    impl Downloader for TestDownloader {
+        type Error = TestDownloadError;
+
+        async fn download_album(
+            &self,
+            _album: &album::Model,
+            _destination: &Path,
+        ) -> Result<(), Self::Error> {
+            match &self.result {
+                Ok(()) => Ok(()),
+                Err(_) => Err(TestDownloadError),
+            }
+        }
+    }
+
+    async fn test_database() -> sea_orm::DatabaseConnection {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    async fn insert_test_album(
+        db: &sea_orm::DatabaseConnection,
+        downloaded: Option<bool>,
+    ) -> album::Model {
+        let mut new_album = album::ActiveModel {
+            id: Set("album-1".into()),
+            title: Set("Test album".into()),
+            album_type: Set(Some("SINGLE".into())),
+            release_year: Set(2026),
+            release_month: Set(None),
+            release_day: Set(None),
+            ..Default::default()
+        };
+        if let Some(downloaded) = downloaded {
+            new_album.downloaded = Set(downloaded);
+        }
+        let album = new_album.insert(db).await.unwrap();
+        artist::ActiveModel {
+            id: Set("artist-1".into()),
+            name: Set("Test artist".into()),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        album_artist::ActiveModel {
+            album_id: Set(album.id.clone()),
+            artist_id: Set("artist-1".into()),
+            position: Set(0),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        album
+    }
 
     #[test]
     fn sanitizes_path_separators_without_losing_readability() {
@@ -333,6 +410,7 @@ mod tests {
             release_year: Set(2026),
             release_month: Set(Some(8)),
             release_day: Set(Some(29)),
+            ..Default::default()
         }
         .insert(&db)
         .await
@@ -358,7 +436,7 @@ mod tests {
         }
 
         let artists = credited_artists(&db, &album.id).await.unwrap();
-        let dto = to_dto(album, artists);
+        let dto: super::dto::Album = (album, artists).into();
 
         assert_eq!(
             dto.artists
@@ -366,6 +444,66 @@ mod tests {
                 .map(|artist| artist.id)
                 .collect::<Vec<_>>(),
             ["primary", "featured"]
+        );
+        assert!(!dto.downloaded);
+    }
+
+    #[tokio::test]
+    async fn new_albums_default_to_not_downloaded() {
+        let db = test_database().await;
+        let album = insert_test_album(&db, None).await;
+
+        assert!(!album.downloaded);
+    }
+
+    #[tokio::test]
+    async fn successful_download_is_saved() {
+        let db = test_database().await;
+        insert_test_album(&db, None).await;
+        let downloader = TestDownloader { result: Ok(()) };
+
+        download_with(&db, "/tmp/music", &downloader, "album-1")
+            .await
+            .unwrap();
+
+        let album = album::Entity::find_by_id("album-1")
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(album.downloaded);
+    }
+
+    #[tokio::test]
+    async fn failed_download_is_not_saved() {
+        let db = test_database().await;
+        insert_test_album(&db, None).await;
+        let downloader = TestDownloader {
+            result: Err(TestDownloadError),
+        };
+
+        assert_eq!(
+            download_with(&db, "/tmp/music", &downloader, "album-1").await,
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        );
+
+        let album = album::Entity::find_by_id("album-1")
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!album.downloaded);
+    }
+
+    #[tokio::test]
+    async fn downloaded_album_conflicts_without_starting_another_download() {
+        let db = test_database().await;
+        insert_test_album(&db, Some(true)).await;
+        let downloader = TestDownloader { result: Ok(()) };
+
+        assert_eq!(
+            download_with(&db, "/tmp/music", &downloader, "album-1").await,
+            Err(StatusCode::CONFLICT)
         );
     }
 }
@@ -462,7 +600,7 @@ pub async fn fetch_all_artist_albums(
                 let db = &db;
                 async move {
                     let artists = credited_artists(db, &album_model.id).await?;
-                    Ok::<_, sea_orm::DbErr>((index, to_dto(album_model, artists)))
+                    Ok::<_, sea_orm::DbErr>((index, (album_model, artists).into()))
                 }
             })
         },
@@ -479,25 +617,6 @@ pub async fn fetch_all_artist_albums(
     Ok(Json(result.into_iter().map(|(_, album)| album).collect()))
 }
 
-/// Legacy artist-scoped download path, kept so existing clients keep working.
-/// The destination still comes from the primary artist; `artist_id` only
-/// guards that the album's primary artist matches the path.
-#[axum::debug_handler]
-pub async fn download_artist_scoped(
-    state: State<AppState>,
-    Path((artist_id, album_id)): Path<(String, String)>,
-) -> Result<(), StatusCode> {
-    let artists = credited_artists(&state.db, &album_id).await.map_err(|e| {
-        error!("Db error: {e:#?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let primary = artists.first().ok_or(StatusCode::NOT_FOUND)?;
-    if primary.id != artist_id {
-        return Err(StatusCode::NOT_FOUND);
-    }
-    download(state, Path(album_id)).await
-}
-
 #[axum::debug_handler]
 pub async fn download(
     State(AppState {
@@ -505,8 +624,17 @@ pub async fn download(
     }): State<AppState>,
     Path(album_id): Path<String>,
 ) -> Result<(), StatusCode> {
-    let album = album::Entity::find_by_id(&album_id)
-        .one(&db)
+    download_with(&db, &config.music_dir, &antra, &album_id).await
+}
+
+async fn download_with<D: Downloader>(
+    db: &sea_orm::DatabaseConnection,
+    music_dir: &str,
+    downloader: &D,
+    album_id: &str,
+) -> Result<(), StatusCode> {
+    let album = album::Entity::find_by_id(album_id)
+        .one(db)
         .await
         .map_err(|e| {
             error!("Db error: {e:#?}");
@@ -514,7 +642,11 @@ pub async fn download(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let artists = credited_artists(&db, &album.id).await.map_err(|e| {
+    if album.downloaded {
+        return Err(StatusCode::CONFLICT);
+    }
+
+    let artists = credited_artists(db, &album.id).await.map_err(|e| {
         error!("Db error: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -524,7 +656,7 @@ pub async fn download(
     // never from the archive's own structure (ADR 0003). A release year of 0
     // means the date has not been refreshed from Tidal yet; the current year
     // keeps the directory from being named "(0)" in the meantime.
-    let music_dir = PathBuf::from(config.music_dir);
+    let music_dir = PathBuf::from(music_dir);
     let release_year = if album.release_year == 0 {
         chrono::Utc::now().year()
     } else {
@@ -537,13 +669,20 @@ pub async fn download(
     );
     let destination = music_dir.join(&primary.name).join(album_directory);
 
-    antra
+    downloader
         .download_album(&album, &destination)
         .await
         .map_err(|e| {
             error!("Download failed: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    let mut active: album::ActiveModel = album.into();
+    active.downloaded = Set(true);
+    active.update(db).await.map_err(|e| {
+        error!("Db error marking album as downloaded: {e:#?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(())
 }

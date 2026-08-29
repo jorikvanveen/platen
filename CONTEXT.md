@@ -38,6 +38,16 @@ Albums. A release may be an album, EP, or single. The name "Album" is the
 entity's name, not a claim that every one is a full-length album.
 _Avoid_: release, record
 
+**Album cover**:
+The optional image Tidal associates with an Album. An Album may remain in the
+catalog without one.
+_Avoid_: album picture, cover art
+
+**Artist profile image**:
+The optional image Tidal associates with an Artist. An Artist may remain in the
+catalog without one.
+_Avoid_: artist picture, avatar
+
 **Downloaded Album**:
 An Album whose audio Platen successfully placed in the Music directory. This
 records Platen's completed work; changes made directly to the files do not

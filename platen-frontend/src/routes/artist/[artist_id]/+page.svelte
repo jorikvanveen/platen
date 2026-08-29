@@ -9,10 +9,12 @@
 	let downloadState: Record<string, "downloading" | "done" | "error"> = $state({});
 
 	async function download(id: string) {
+		if (data.albums.find((album) => album.id === id)?.downloaded) return;
+
 		downloadState[id] = "downloading";
 		try {
 			const response = await fetch(`${API_URL}/albums/${id}/download`, { method: "POST" });
-			downloadState[id] = response.ok ? "done" : "error";
+			downloadState[id] = response.ok || response.status === 409 ? "done" : "error";
 		} catch {
 			downloadState[id] = "error";
 		}
@@ -44,12 +46,12 @@
 			{/snippet}
 			{#snippet action()}
 				<button
-					class:success={downloadState[album.id] === "done"}
+					class:success={album.downloaded || downloadState[album.id] === "done"}
 					class:error={downloadState[album.id] === "error"}
-					disabled={downloadState[album.id] === "downloading" || downloadState[album.id] === "done"}
+					disabled={album.downloaded || downloadState[album.id] === "downloading" || downloadState[album.id] === "done"}
 					onclick={() => download(album.id)}
 				>
-					{downloadState[album.id] === "downloading" ? "Downloading…" : downloadState[album.id] === "done" ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
+					{downloadState[album.id] === "downloading" ? "Downloading…" : album.downloaded || downloadState[album.id] === "done" ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
 				</button>
 			{/snippet}
 			<ReleaseRow title={album.title} {metadata} {action} />
