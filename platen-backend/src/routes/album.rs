@@ -28,6 +28,31 @@ pub struct ReleaseDate {
     pub day: Option<i32>,
 }
 
+fn sanitize_filename_component(value: &str) -> String {
+    let mut sanitized = String::new();
+    for character in value.chars() {
+        match character {
+            '/' | '\\' => {
+                if !sanitized.ends_with(" - ") {
+                    sanitized.push_str(" - ");
+                }
+            }
+            ':' | '*' | '?' | '"' | '<' | '>' | '|' => {
+                sanitized.push('_');
+            }
+            character if character.is_control() => sanitized.push('_'),
+            character => sanitized.push(character),
+        }
+    }
+
+    let sanitized = sanitized.trim().trim_end_matches([' ', '.']);
+    if sanitized.is_empty() {
+        "Unknown album".to_owned()
+    } else {
+        sanitized.to_owned()
+    }
+}
+
 pub mod dto {
     use serde::{Deserialize, Serialize};
     use ts_rs::TS;
@@ -228,8 +253,28 @@ mod tests {
     use migration::MigratorTrait;
     use sea_orm::{ActiveModelTrait, Database, Set};
 
-    use super::{ReleaseDate, credited_artists, parse_release_date, to_dto};
+    use super::{
+        ReleaseDate, credited_artists, parse_release_date, sanitize_filename_component, to_dto,
+    };
     use crate::entity::{album, album_artist, artist};
+
+    #[test]
+    fn sanitizes_path_separators_without_losing_readability() {
+        assert_eq!(
+            sanitize_filename_component("Speakerboxxx/The Love Below"),
+            "Speakerboxxx - The Love Below"
+        );
+        assert_eq!(sanitize_filename_component("A\\B/C"), "A - B - C");
+    }
+
+    #[test]
+    fn replaces_invalid_characters_and_falls_back_for_empty_names() {
+        assert_eq!(
+            sanitize_filename_component("A:B* C? D\" E< F> G|"),
+            "A_B_ C_ D_ E_ F_ G_"
+        );
+        assert_eq!(sanitize_filename_component("...   "), "Unknown album");
+    }
 
     #[test]
     fn parses_release_date_at_each_supported_precision() {
@@ -485,7 +530,11 @@ pub async fn download(
     } else {
         album.release_year
     };
-    let album_directory = format!("{} ({})", album.title, release_year);
+    let album_directory = format!(
+        "{} ({})",
+        sanitize_filename_component(&album.title),
+        release_year
+    );
     let destination = music_dir.join(&primary.name).join(album_directory);
 
     antra
