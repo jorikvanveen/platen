@@ -2,6 +2,7 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
+use futures_util::{StreamExt, TryStreamExt, stream};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tracing::info;
@@ -30,6 +31,17 @@ pub mod dto {
         pub release_date: Option<String>,
         pub popularity: f64,
     }
+
+    #[derive(Debug, Serialize, Deserialize, TS)]
+    #[ts(export)]
+    pub struct TidalAlbumSearchHit {
+        pub id: String,
+        pub title: String,
+        pub album_type: String,
+        pub release_date: Option<String>,
+        pub popularity: f64,
+        pub artists: Vec<TidalArtist>,
+    }
 }
 
 impl From<crate::services::tidal::TidalArtist> for dto::TidalArtist {
@@ -53,6 +65,19 @@ impl From<crate::services::tidal::TidalAlbum> for dto::TidalAlbum {
     }
 }
 
+impl From<services::tidal::ResolvedTidalSearchedAlbum> for dto::TidalAlbumSearchHit {
+    fn from(a: services::tidal::ResolvedTidalSearchedAlbum) -> Self {
+        dto::TidalAlbumSearchHit {
+            id: a.id,
+            title: a.title,
+            album_type: a.r#type,
+            release_date: a.release_date,
+            popularity: a.popularity,
+            artists: a.artists.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SearchQuery {
     pub query: String,
@@ -69,6 +94,18 @@ pub async fn search_artists(
         .await
         .map_err(map_tidal_error)?;
     Ok(Json(artists.into_iter().map(Into::into).collect()))
+}
+
+#[axum::debug_handler]
+pub async fn search_albums(
+    State(AppState { tidal, .. }): State<AppState>,
+    Query(SearchQuery { query }): Query<SearchQuery>,
+) -> Result<Json<Vec<dto::TidalAlbumSearchHit>>, StatusCode> {
+    info!("Searching tidal for album: {query}");
+    let albums = tidal.find_album(&query).await.map_err(map_tidal_error)?;
+    let hits = albums.into_iter().map(Into::into).collect();
+
+    Ok(Json(hits))
 }
 
 #[axum::debug_handler]

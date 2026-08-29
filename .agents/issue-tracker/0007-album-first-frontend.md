@@ -6,8 +6,7 @@ credited artists, and adds the whole bundle in one click. The artist search
 page becomes search-and-add-releases: picking an artist browses their Tidal
 discography, and adding a release creates the artist as a side effect. Bare
 artist creation is gone. The per-artist page shows every credited artist on
-each album row, primary first. The homepage artist list is
-unchanged.
+each album row, primary first.
 
 Per the multi-artist credits plan (decisions 3, 4, 17, 18, 19).
 
@@ -20,4 +19,3 @@ Per the multi-artist credits plan (decisions 3, 4, 17, 18, 19).
 - [ ] Album search backend route exists, wrapping the existing Tidal album search service
 - [ ] Artist search page adds releases instead of creating a bare artist; adding a release creates the artist
 - [ ] Per-artist page shows all credited artists per album, primary first
-- [ ] Homepage unchanged

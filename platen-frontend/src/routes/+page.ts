@@ -1,16 +1,11 @@
+import { error } from '@sveltejs/kit';
 import { API_URL } from '$lib/constants';
 import type { Artist } from '$lib/dto/Artist';
 import type { PageLoad } from './$types';
 
 export const load: PageLoad = async ({ fetch }) => {
-  console.log(`${API_URL}/artists`);
-  const resp = await fetch(`${API_URL}/artists`);
-  if (!resp.ok) { 
-    console.error(resp.status, await resp.text())
-    throw new Error("Failed to fetch artists");
-  }
-  const artists: Artist[] = await resp.json()
-  return {
-    artists
-  }
-}
+	const response = await fetch(`${API_URL}/artists`);
+	if (!response.ok) throw error(response.status, 'Could not load artists');
+
+	return { artists: (await response.json()) as Artist[] };
+};

@@ -3,10 +3,10 @@ use axum::{
     extract::{Path, State},
 };
 use reqwest::StatusCode;
-use sea_orm::{ActiveModelTrait, ActiveValue, EntityTrait};
+use sea_orm::EntityTrait;
 use tracing::{error, info};
 
-use crate::{AppState, entity::artist, routes::utils};
+use crate::{AppState, entity::artist};
 
 pub mod dto {
     use serde::{Deserialize, Serialize};
@@ -44,30 +44,6 @@ pub async fn get(
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
-}
-
-#[axum::debug_handler]
-pub async fn create(
-    State(AppState { tidal, db, .. }): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<Json<dto::Artist>, StatusCode> {
-    info!("Creating artist {id}");
-    let tidal_artist = tidal
-        .get_artist(&id)
-        .await
-        .map_err(utils::map_tidal_error)?;
-
-    let artist_model = artist::ActiveModel {
-        id: ActiveValue::Set(tidal_artist.id),
-        name: ActiveValue::Set(tidal_artist.name),
-    };
-
-    let result_model = artist_model.insert(&db).await.map_err(|e| {
-        error!("DB error: {e:#?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(Json(result_model.into()))
 }
 
 pub async fn list(

@@ -71,7 +71,6 @@ fn app_router(state: AppState) -> Router {
     Router::new()
         .route("/artists", get(routes::artist::list))
         .route("/artists/{id}", get(routes::artist::get))
-        .route("/artists/{id}", post(routes::artist::create))
         .route(
             "/artists/{artist_id}/albums/{album_id}",
             post(routes::album::create_artist_scoped),
@@ -91,6 +90,7 @@ fn app_router(state: AppState) -> Router {
             post(routes::album::download_artist_scoped),
         )
         .route("/tidal/search/artists", get(routes::tidal::search_artists))
+        .route("/tidal/search/albums", get(routes::tidal::search_albums))
         .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))
         .route("/", get(|| async { "Hello world" }))
         .with_state(state)
