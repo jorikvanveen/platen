@@ -205,15 +205,9 @@ impl Antra {
     }
 }
 
-// Antra's ZIP archives arrive in folders whose names do not reliably match
-// the catalog artist, and the media server reads those folder names as
-// artist names, so the archive's structure is never trusted: the files land
-// in the catalog-derived destination (ADR 0003). Observed archives hold two
-// nested folders above one flat directory of tracks, so placement navigates
-// that shape and fails loudly on anything else.
-//
-// The extraction parent is injected rather than read from temp_dir() inside
-// so tests can point it at their workspace and assert it ends up empty.
+// Archive folder names are not reliable artist names, and media servers read them as
+// such. The destination must therefore come from catalog metadata. Tests inject the
+// extraction parent so they can verify cleanup in a controlled workspace.
 async fn place_archive(
     archive: &Path,
     destination: &Path,
@@ -274,9 +268,8 @@ async fn find_album_directory(extraction_root: &Path) -> Result<PathBuf, AntraEr
     }
 }
 
-// The two levels above the tracks must each hold exactly one directory and
-// nothing else: a stray file would be silently dropped by the flat copy, and
-// a second directory would make the album directory ambiguous.
+// Reject extra files or directories because flattening them could drop tracks or
+// make the album directory ambiguous.
 async fn single_subdirectory(directory: &Path) -> Result<PathBuf, AntraError> {
     match directory_shape(directory).await? {
         (Some(subdirectory), false) => Ok(subdirectory),
@@ -286,9 +279,6 @@ async fn single_subdirectory(directory: &Path) -> Result<PathBuf, AntraError> {
     }
 }
 
-// Every level of the archive is classified by the same question: does this
-// directory hold one subdirectory, files, or both? A second subdirectory is
-// unexpected at every level, so the walk fails on it directly.
 async fn directory_shape(directory: &Path) -> Result<(Option<PathBuf>, bool), AntraError> {
     let mut entries = fs::read_dir(directory).await?;
     let mut subdirectory = None;
