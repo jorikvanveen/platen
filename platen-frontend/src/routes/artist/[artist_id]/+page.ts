@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { API_URL } from '$lib/constants';
-import type { Artist } from '$lib/dto/Artist';
 import type { Album } from '$lib/dto/Album';
+import type { Artist } from '$lib/dto/Artist';
 import type { PageLoad } from './$types';
 
 export const load: PageLoad = async ({ fetch, params }) => {

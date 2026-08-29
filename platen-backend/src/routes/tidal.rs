@@ -2,12 +2,12 @@ use axum::{
     Json,
     extract::{Path, Query, State},
 };
-use futures_util::{StreamExt, TryStreamExt, stream};
+
 use reqwest::StatusCode;
 use serde::Deserialize;
 use tracing::info;
 
-use crate::AppState;
+use crate::{AppState, services};
 
 use crate::routes::utils::map_tidal_error;
 
@@ -44,8 +44,8 @@ pub mod dto {
     }
 }
 
-impl From<crate::services::tidal::TidalArtist> for dto::TidalArtist {
-    fn from(a: crate::services::tidal::TidalArtist) -> Self {
+impl From<services::tidal::TidalArtist> for dto::TidalArtist {
+    fn from(a: services::tidal::TidalArtist) -> Self {
         dto::TidalArtist {
             id: a.id,
             name: a.name,
@@ -53,8 +53,8 @@ impl From<crate::services::tidal::TidalArtist> for dto::TidalArtist {
     }
 }
 
-impl From<crate::services::tidal::TidalAlbum> for dto::TidalAlbum {
-    fn from(a: crate::services::tidal::TidalAlbum) -> Self {
+impl From<services::tidal::TidalAlbum> for dto::TidalAlbum {
+    fn from(a: services::tidal::TidalAlbum) -> Self {
         dto::TidalAlbum {
             id: a.id,
             title: a.title,
