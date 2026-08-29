@@ -38,6 +38,12 @@ Albums. A release may be an album, EP, or single. The name "Album" is the
 entity's name, not a claim that every one is a full-length album.
 _Avoid_: release, record
 
+**Downloaded Album**:
+An Album whose audio Platen successfully placed in the Music directory. This
+records Platen's completed work; changes made directly to the files do not
+change the Album's downloaded status.
+_Avoid_: completed Album, installed Album
+
 ## External services
 
 **Tidal**:
@@ -57,3 +63,11 @@ named for its title and release year. Platen discards directory structure
 provided by a downloader. Media servers may scan this directory, but platen
 does not read from or reconcile against them.
 _Avoid_: library, collection, folder structure, music dir convention
+
+## Download workflow
+
+**Download job**:
+A user's request to fetch one Album through Antra and place its audio in the
+Music directory. A job is queued, running, succeeded, failed, or cancelled; only
+a queued job may be cancelled, and only one unfinished job may exist per Album.
+_Avoid_: queue item, Antra job, download request
