@@ -1,5 +1,10 @@
 # Tidal album credits define album-artist links
 
+Status: accepted
+
+ADR-0005 supersedes the parts of this record that treat Jellyfin Import or
+MusicBrainz linking as current behavior.
+
 An album can be credited to several artists, and platen needs one answer to
 "which artists is this album linked to". MusicBrainz and Tidal disagree on
 that list often enough that picking a source is a real decision: MusicBrainz

@@ -1,5 +1,11 @@
 # Library layout is computed from catalog metadata, never from downloader archives
 
+Status: accepted
+
+ADR-0005 supersedes any part of this record that treats Jellyfin or another
+media server as an integration inside Platen's boundary. Its Jellyfin references
+remain as historical context for the layout decision.
+
 Antra's ZIP archives arrive in folders whose names we cannot control and
 cannot trust to match the catalog; on a collaboration album the folder is
 named after artists other than the catalog artist. Jellyfin reads those

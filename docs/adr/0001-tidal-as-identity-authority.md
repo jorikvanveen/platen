@@ -1,5 +1,11 @@
 # Tidal as identity authority
 
+Status: accepted
+
+ADR-0005 supersedes the parts of this record that treat Jellyfin Import,
+MusicBrainz linking, or external cross-reference identifiers as current
+behavior.
+
 Platen's catalog needs one primary key per Artist and Album row, but rows are
 discovered through three creation paths (Tidal-by-ID, Jellyfin Import,
 MusicBrainz-driven name search) that touch different services. Tidal artist and

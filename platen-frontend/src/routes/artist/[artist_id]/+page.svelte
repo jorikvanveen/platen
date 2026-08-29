@@ -37,7 +37,7 @@
                 <td>{album.title}</td>
                 <td>{album.artists.map((a) => a.name).join(", ")}</td>
                 <td>
-                    {#if album.jellyfin_id != null || download_state[album.id] == "done"}
+                    {#if download_state[album.id] == "done"}
                         Downloaded
                     {:else}
                         <button disabled={download_state[album.id] == "downloading"} onclick={() => download(album.id)}>Download</button>

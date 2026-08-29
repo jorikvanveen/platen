@@ -13,18 +13,6 @@ impl MigrationTrait for Migration {
                     .if_not_exists()
                     .col(string(Artist::Id).primary_key())
                     .col(string(Artist::Name))
-                    .col(string_null(Artist::MusicbrainzArtistId))
-                    .to_owned(),
-            )
-            .await?;
-
-        manager
-            .create_index(
-                Index::create()
-                    .if_not_exists()
-                    .name("artist-musicbrainz-artist-id-idx")
-                    .table(Artist::Table)
-                    .col(Artist::MusicbrainzArtistId)
                     .to_owned(),
             )
             .await?;
@@ -37,23 +25,9 @@ impl MigrationTrait for Migration {
                     .col(string(Album::Id).primary_key())
                     .col(string(Album::Title))
                     .col(string_null(Album::AlbumType))
-                    .col(string_null(Album::JellyfinId))
-                    .col(string_null(Album::MusicbrainzReleaseGroupId))
-                    .col(string_null(Album::MatchMethod))
                     .col(integer(Album::ReleaseYear).default(0))
                     .col(integer_null(Album::ReleaseMonth))
                     .col(integer_null(Album::ReleaseDay))
-                    .to_owned(),
-            )
-            .await?;
-
-        manager
-            .create_index(
-                Index::create()
-                    .if_not_exists()
-                    .name("album-musicbrainz-release-group-id-idx")
-                    .table(Album::Table)
-                    .col(Album::MusicbrainzReleaseGroupId)
                     .to_owned(),
             )
             .await?;
@@ -112,7 +86,6 @@ enum Artist {
     Table,
     Id,
     Name,
-    MusicbrainzArtistId,
 }
 
 #[derive(Iden)]
@@ -122,9 +95,6 @@ enum Album {
     Id,
     Title,
     AlbumType,
-    JellyfinId,
-    MusicbrainzReleaseGroupId,
-    MatchMethod,
     ReleaseYear,
     ReleaseMonth,
     ReleaseDay,

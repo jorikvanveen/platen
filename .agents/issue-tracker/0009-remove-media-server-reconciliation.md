@@ -85,14 +85,15 @@ databases.
 - Mark the single-concurrent-import architecture record as superseded. Update other current architecture records where they describe Jellyfin Import or MusicBrainz as a live creation path. Keep historically useful Jellyfin references in superseded ADRs and closed issues.
 - The obsolete Jellyfin import issue was removed during planning because its requested feature is being deleted. Keep remaining active issues free of import blockers and acceptance criteria. Fresh-database verification covers explicit Album addition and download.
 - The active multi-artist plan no longer prescribes import or MusicBrainz work. Historical closed issue records may retain references to the old behavior.
+- Keep `RateLimit` and `Tidal::find_album` even though this removal leaves them without callers. They are retained deliberately for planned future features, marked with allow attributes and why-comments, and their presence is an intentional exception to this removal, not leftover import machinery.
 - Do not remove the HTTP dependency merely because the Jellyfin and MusicBrainz clients disappear. Tidal and Antra still use HTTP.
 
 ## Testing Decisions
 
 - Prefer external behavior over private decision helpers. Deleted import decision functions and their unit tests should disappear rather than be rewritten around dead concepts.
-- Use a fresh SQLite database as the main schema seam. Run the rewritten initial migration and assert that the Artist and Album tables omit all Jellyfin, MusicBrainz, and resolution-method columns and indexes while retaining the catalog and ordered-credit schema.
+- The rewritten initial migration is the schema seam. Fresh-database schema verification happens by reviewing the migration file itself, which is the only schema history, and by regenerating entities and bindings from the migrated database. No automated schema-introspection test is kept for it.
 - Test the assembled HTTP router at the request boundary. Requests to both retired import paths must return `404 Not Found`. Prefer the existing router seam if one is available; otherwise extract the smallest router-construction seam needed to issue in-process requests without starting a server.
-- Exercise the existing Album addition seam against a fresh database. Adding by Tidal ID still creates the Album, upserts every credited Artist, and stores ordered credits without any retired fields.
+- Exercise the Album addition write path (album insert, artist upserts, ordered credits) against a fresh migrated database, with no retired fields written. The seam is the catalog write function, not the HTTP route: a route-level test would require stubbing Tidal behind a trait, and the route's remaining work (the Tidal fetch and DTO mapping) stays untested here. Live end-to-end checks against a running server cover that remainder.
 - Exercise the existing download seam or its established filesystem tests. Downloads must still land in the same Primary artist and Album directory used before this removal.
 - Run backend tests after regenerating entities and bindings. Compilation is part of the check because model constructors across Album and Artist routes must adopt the reduced generated shapes.
 - Run the TypeScript binding export test and verify that frontend DTOs omit retired fields and import DTO files no longer exist.

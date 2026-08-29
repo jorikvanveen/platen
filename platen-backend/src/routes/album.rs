@@ -40,9 +40,6 @@ pub mod dto {
         pub artists: Vec<Artist>,
         pub title: String,
         pub album_type: Option<String>,
-        pub jellyfin_id: Option<String>,
-        pub musicbrainz_release_group_id: Option<String>,
-        pub match_method: Option<String>,
         pub release_year: i32,
         pub release_month: Option<i32>,
         pub release_day: Option<i32>,
@@ -62,9 +59,6 @@ fn to_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
         artists,
         title: model.title,
         album_type: model.album_type,
-        jellyfin_id: model.jellyfin_id,
-        musicbrainz_release_group_id: model.musicbrainz_release_group_id,
-        match_method: model.match_method,
         release_year: model.release_year,
         release_month: model.release_month,
         release_day: model.release_day,
@@ -132,22 +126,15 @@ pub async fn create(
         id: ActiveValue::Set(tidal_album.id),
         title: ActiveValue::Set(tidal_album.title),
         album_type: ActiveValue::Set(Some(tidal_album.r#type)),
-        jellyfin_id: ActiveValue::Set(None),
-        musicbrainz_release_group_id: ActiveValue::Set(None),
-        match_method: ActiveValue::Set(Some("tidal_id".into())),
         release_year: ActiveValue::Set(release_date.year),
         release_month: ActiveValue::Set(release_date.month),
         release_day: ActiveValue::Set(release_date.day),
     };
     let artists: Vec<Artist> = tidal_artists
         .iter()
-        .map(|a| {
-            artist::Model {
-                id: a.id.clone(),
-                name: a.name.clone(),
-                musicbrainz_artist_id: None,
-            }
-            .into()
+        .map(|a| Artist {
+            id: a.id.clone(),
+            name: a.name.clone(),
         })
         .collect();
 

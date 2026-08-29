@@ -11,10 +11,7 @@ use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 
-use crate::services::{
-    downloaders::antra::Antra, import::ImportTracker, jellyfin::Jellyfin, musicbrainz::Musicbrainz,
-    tidal::Tidal,
-};
+use crate::services::{downloaders::antra::Antra, tidal::Tidal};
 
 #[allow(unused)]
 mod entity;
@@ -30,9 +27,6 @@ struct Config {
     tidal_client_id: String,
     tidal_client_secret: String,
     music_dir: String,
-    jellyfin_url: String,
-    jellyfin_api_key: String,
-    jellyfin_user_id: String,
 }
 
 #[tokio::main]
@@ -55,28 +49,26 @@ async fn main() -> color_eyre::Result<()> {
     let antra = Antra::new(&config);
     antra.login().await?;
 
-    let musicbrainz = Musicbrainz::new();
-
-    let jellyfin = Jellyfin::new(
-        config.jellyfin_url.clone(),
-        config.jellyfin_api_key.clone(),
-        config.jellyfin_user_id.clone(),
-    );
-
     let db: DatabaseConnection = Database::connect(&config.database_url).await?;
     Migrator::up(&db, None).await?;
 
     let bind_address = config.bind_address.clone();
     let state = AppState {
-        musicbrainz,
-        jellyfin,
         tidal,
         antra,
         db,
         config,
-        import: ImportTracker::default(),
     };
-    let app = Router::new()
+    let app = app_router(state);
+    let listener = TcpListener::bind(&bind_address).await?;
+
+    axum::serve(listener, app).await?;
+
+    Ok(())
+}
+
+fn app_router(state: AppState) -> Router {
+    Router::new()
         .route("/artists", get(routes::artist::list))
         .route("/artists/{id}", get(routes::artist::get))
         .route("/artists/{id}", post(routes::artist::create))
@@ -97,22 +89,12 @@ async fn main() -> color_eyre::Result<()> {
         )
         .route("/tidal/search/artists", get(routes::tidal::search_artists))
         .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))
-        .route("/jellyfin/import", post(routes::jellyfin::import))
-        .route("/jellyfin/import/status", get(routes::jellyfin::status))
         .route("/", get(|| async { "Hello world" }))
-        .with_state(state);
-    let listener = TcpListener::bind(&bind_address).await?;
-
-    axum::serve(listener, app).await?;
-
-    Ok(())
+        .with_state(state)
 }
 
 #[derive(Clone)]
 struct AppState {
-    musicbrainz: Musicbrainz,
-    jellyfin: Jellyfin,
-    import: ImportTracker,
     tidal: Tidal,
     antra: Antra,
     db: DatabaseConnection,

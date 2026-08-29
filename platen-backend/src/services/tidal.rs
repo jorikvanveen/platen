@@ -148,6 +148,7 @@ impl Tidal {
         self.get_oauth_token().await
     }
 
+    #[allow(unused)]
     pub async fn find_album(
         &self,
         query: &str,
@@ -364,7 +365,7 @@ impl TidalAlbum {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
+#[allow(unused)]
 pub struct ResolvedTidalSearchedAlbum {
     pub id: String,
     pub title: String,
@@ -461,6 +462,7 @@ mod tidal_response {
     }
     #[derive(Debug, Deserialize, Clone)]
     #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
     pub struct AlbumSearchIncludedAttributes {
         pub title: String,
         pub barcode_id: Option<String>,
