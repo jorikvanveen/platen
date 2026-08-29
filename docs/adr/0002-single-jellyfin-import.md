@@ -1,5 +1,7 @@
 # Single concurrent Jellyfin import
 
+Status: superseded by ADR-0005
+
 Platen runs as a single self-hosted binary serving one user against one
 Jellyfin server, and Import is a minutes-long operation that hits Tidal and
 MusicBrainz for every Jellyfin album. Two concurrent imports would redo each

@@ -12,8 +12,8 @@ deletes the DB before updating). Fresh-database setup is verified end to end.
 Per the multi-artist credits plan (decisions 4, 9) and the expand-contract
 sequence: this is the contract step, blocked by every migrate step.
 
-**Blocked by:** 0005 (Import links all credited artists), 0006 (Read paths
-expose credited artists), 0007 (Album-first frontend).
+**Blocked by:** 0006 (Read paths expose credited artists), 0007 (Album-first
+frontend), 0009 (Remove media-server reconciliation).
 
 **Status:** ready-for-agent
 
@@ -21,4 +21,4 @@ expose credited artists), 0007 (Album-first frontend).
 - [ ] Album DTO has no single-artist field; frontend uses the credited-artists list
 - [ ] Artist-scoped album create route, artist-scoped download route, and bare artist creation route removed
 - [ ] Initial migration creates the final schema; later incremental migrations folded in and deleted
-- [ ] Database file deleted; fresh database verified end to end (add album, import, download)
+- [ ] Database file deleted; fresh database verified end to end (add album, download)

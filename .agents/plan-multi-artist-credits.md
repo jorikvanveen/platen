@@ -3,11 +3,11 @@
 ## Problem
 
 The catalog assumes an Album has exactly one Artist. This is baked into the
-schema (`album.artist_id` NOT NULL FK), the API (`POST /artists/{artist_id}/albums/{album_id}`),
-the import path (keeps only Tidal's first album artist), and the frontend
-(artist-first add flow). In reality releases are credited to multiple artists,
-and Tidal already returns the full credit list (`Tidal::get_album_artists`);
-the model just discards it.
+schema (`album.artist_id` NOT NULL FK), the API
+(`POST /artists/{artist_id}/albums/{album_id}`), and the frontend's artist-first
+add flow. In reality releases are credited to multiple artists, and Tidal
+already returns the full credit list (`Tidal::get_album_artists`); the model
+just discards it.
 
 ## Decisions (settled in design session, 2026-08-28)
 
@@ -22,14 +22,14 @@ the model just discards it.
 4. **Artist lifecycle**: `POST /artists/{id}` is removed. Artists come into
    existence only as a side effect of adding an Album they are credited on.
    An Artist with any credited Album cannot be deleted (no cascade).
-5. **Library layout**: An Album lives under its Primary artist's directory
-   only (recorded in ADR 0003). Other credited artists' pages show the album;
+5. **Music directory**: An Album lives under its Primary artist's directory
+   only (recorded in ADR 0003). Other credited artists' pages show the Album;
    the filesystem has one home for it.
 6. **Download**: `POST /albums/{album_id}/download`; destination directory
    derived from the Primary artist.
-7. **Import**: links all Tidal credited artists, same rule as the manual path.
-   MB's first artist credit stays as the Tidal search string (known weak spot
-   for collabs whose MB credit order differs from Tidal's).
+7. **Catalog entry**: Albums enter the catalog only through an explicit
+   Tidal-backed add action. Files and media-server records never create or
+   delete Albums.
 8. **DTO**: `Album.artists: Artist[]` ordered by position; `artist_id` removed.
 9. **Migration**: none. The initial table-creation migration is rewritten to
    the new schema; the later incremental migrations are folded into it and
@@ -47,12 +47,10 @@ the model just discards it.
   - `album` loses `artist_id`.
   - New `album_artist` table: `album_id` (FK), `artist_id` (FK), `position`
     (int), PK on `(album_id, artist_id)`. No `ON DELETE CASCADE` on either FK.
-  - Fold in `m20260824_180325_rename_musicbrainz_id_columns` and
-    `m20260825_000001_add_album_release_date` so the initial migration creates
-    the final schema directly; delete those files and update
-    `migration/src/lib.rs`.
-- Regenerate entities (`sea-orm-cli generate entity` per existing codegen
-  provenance headers) or hand-edit `entity/album.rs`:
+  - Coordinate with issue 0009 so the rewritten initial migration omits all
+    retired integration columns and indexes.
+- Regenerate entities with `scripts/gen-entities.sh`; never edit generated
+  entity files by hand:
   - Drop `artist_id` column and `Artist` relation.
   - Add `AlbumArtist` entity with relations to both `album` and `artist`.
 - Delete `db.sqlite`.
@@ -78,13 +76,6 @@ the model just discards it.
   `POST /albums/{album_id}/download`, remove artist create, remove
   artist-scoped album create).
 
-### Backend: import
-
-- `routes/jellyfin.rs::resolve_album`:
-  - After the Tidal hit, fetch all credited artists (`get_album_artists`),
-    upsert each, and insert `album_artist` rows with position.
-  - Keep MB first-credit search string as is.
-  - Update `decide_album_insert` and its tests for the new shape.
 
 ### Frontend
 
@@ -104,14 +95,12 @@ the model just discards it.
 
 - `CONTEXT.md` already updated (Album credit, Primary artist, Artist, Album).
 - ADR 0003 already amended (primary-artist-only directory).
-- Candidate new ADR: "Tidal credits define album-artist links" (hard to
-  reverse once data accumulates, surprising without context, real trade-off
-  vs MB credits). Write it when implementing.
+- ADR 0004 records that Tidal credits define Album-Artist links.
 
 ## Out of scope
 
 - Track-level credits.
 - Refreshing credits of albums added before the change (fresh start makes it
   moot).
-- Search-string tuning for collab albums (Q14 known weak spot).
+- Automatic catalog discovery from files or media-server records.
 - PR splitting (decided after the plan is reviewed).
