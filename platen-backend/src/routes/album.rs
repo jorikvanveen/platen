@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use chrono::{Datelike, NaiveDate};
+use futures_util::{StreamExt, TryStreamExt, stream};
 
 use axum::{
     Json,
@@ -130,18 +131,22 @@ pub async fn create(
         release_month: ActiveValue::Set(release_date.month),
         release_day: ActiveValue::Set(release_date.day),
     };
-    let artists: Vec<Artist> = tidal_artists
-        .iter()
-        .map(|a| Artist {
-            id: a.id.clone(),
-            name: a.name.clone(),
-        })
-        .collect();
-
+    let album_id_for_txn = album_id.clone();
     let model = db
         .transaction::<_, album::Model, sea_orm::DbErr>(|txn| {
             Box::pin(async move {
-                let model = new_album.insert(txn).await?;
+                album::Entity::insert(new_album)
+                    .on_conflict_do_nothing()
+                    .exec(txn)
+                    .await?;
+                let model = album::Entity::find_by_id(&album_id_for_txn)
+                    .one(txn)
+                    .await?
+                    .ok_or_else(|| {
+                        sea_orm::DbErr::RecordNotFound(format!(
+                            "Album {album_id_for_txn} was not found after insertion"
+                        ))
+                    })?;
                 for tidal_artist in &tidal_artists {
                     catalog_utils::upsert_artist(txn, tidal_artist).await?;
                 }
@@ -155,6 +160,10 @@ pub async fn create(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
+    let artists = credited_artists(&db, &model.id).await.map_err(|e| {
+        error!("Db error loading album credits: {e:#?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     Ok(Json(to_dto(model, artists)))
 }
 
@@ -352,19 +361,27 @@ pub async fn fetch_all_artist_albums(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let mut result = Vec::with_capacity(rows.len());
-    for (_, album_model) in rows {
-        let Some(album_model) = album_model else {
-            continue;
-        };
-        let artists = credited_artists(&db, &album_model.id).await.map_err(|e| {
-            error!("Db error: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-        result.push(to_dto(album_model, artists));
-    }
+    let mut result = stream::iter(rows.into_iter().enumerate().filter_map(
+        |(index, (_, album_model))| {
+            album_model.map(|album_model| {
+                let db = &db;
+                async move {
+                    let artists = credited_artists(db, &album_model.id).await?;
+                    Ok::<_, sea_orm::DbErr>((index, to_dto(album_model, artists)))
+                }
+            })
+        },
+    ))
+    .buffer_unordered(20)
+    .try_collect::<Vec<_>>()
+    .await
+    .map_err(|e| {
+        error!("Db error: {e:#?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    result.sort_by_key(|(index, _)| *index);
 
-    Ok(Json(result))
+    Ok(Json(result.into_iter().map(|(_, album)| album).collect()))
 }
 
 /// Legacy artist-scoped download path, kept so existing clients keep working.
