@@ -17,7 +17,7 @@ use tracing::{error, info};
 use crate::{
     AppState,
     entity::{self, album, album_artist, artist},
-    routes::artist::dto::Artist,
+    routes::{artist::dto::Artist, download::dto::DownloadJob},
     services::{catalog_utils, downloaders::Downloader},
 };
 
@@ -279,17 +279,16 @@ mod tests {
         result: Result<(), TestDownloadError>,
     }
 
+    #[async_trait::async_trait]
     impl Downloader for TestDownloader {
-        type Error = TestDownloadError;
-
         async fn download_album(
             &self,
             _album: &album::Model,
             _destination: &Path,
-        ) -> Result<(), Self::Error> {
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             match &self.result {
                 Ok(()) => Ok(()),
-                Err(_) => Err(TestDownloadError),
+                Err(_) => Err(Box::new(TestDownloadError)),
             }
         }
     }
@@ -506,6 +505,38 @@ mod tests {
             Err(StatusCode::CONFLICT)
         );
     }
+
+    #[tokio::test]
+    async fn missing_primary_artist_fails_download() {
+        let db = test_database().await;
+        let album = insert_test_album(&db, None).await;
+        album_artist::Entity::delete_by_id((album.id.clone(), "artist-1".to_owned()))
+            .exec(&db)
+            .await
+            .unwrap();
+        artist::ActiveModel {
+            id: Set("artist-2".into()),
+            name: Set("Secondary artist".into()),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        album_artist::ActiveModel {
+            album_id: Set(album.id),
+            artist_id: Set("artist-2".into()),
+            position: Set(1),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+
+        let downloader = TestDownloader { result: Ok(()) };
+
+        assert_eq!(
+            download_with(&db, "/tmp/music", &downloader, "album-1").await,
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        );
+    }
 }
 
 pub async fn refresh_release_dates(
@@ -619,18 +650,41 @@ pub async fn fetch_all_artist_albums(
 
 #[axum::debug_handler]
 pub async fn download(
-    State(AppState {
-        antra, db, config, ..
-    }): State<AppState>,
+    State(AppState { db, queue, .. }): State<AppState>,
     Path(album_id): Path<String>,
-) -> Result<(), StatusCode> {
-    download_with(&db, &config.music_dir, &antra, &album_id).await
+) -> Result<(StatusCode, Json<DownloadJob>), StatusCode> {
+    let album = album::Entity::find_by_id(&album_id)
+        .one(&db)
+        .await
+        .map_err(|error| {
+            error!("Could not load album before enqueueing download: {error:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if album.as_ref().is_some_and(|album| album.downloaded) {
+        return Err(StatusCode::CONFLICT);
+    }
+    let release_name = album
+        .map(|album| album.title)
+        .unwrap_or_else(|| album_id.clone());
+    let job = queue.enqueue(album_id).await.map_err(|error| {
+        error!("Could not enqueue download job: {error:#?}");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(DownloadJob {
+            id: job.id.to_string(),
+            album_id: job.album_id,
+            release_name,
+            status: job.status.into(),
+        }),
+    ))
 }
 
-async fn download_with<D: Downloader>(
+pub(crate) async fn download_with(
     db: &sea_orm::DatabaseConnection,
     music_dir: &str,
-    downloader: &D,
+    downloader: &dyn Downloader,
     album_id: &str,
 ) -> Result<(), StatusCode> {
     let album = album::Entity::find_by_id(album_id)
@@ -646,11 +700,18 @@ async fn download_with<D: Downloader>(
         return Err(StatusCode::CONFLICT);
     }
 
-    let artists = credited_artists(db, &album.id).await.map_err(|e| {
-        error!("Db error: {e:#?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let primary = artists.first().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let (_, primary) = album_artist::Entity::find()
+        .filter(album_artist::Column::AlbumId.eq(&album.id))
+        .filter(album_artist::Column::Position.eq(0))
+        .find_also_related(artist::Entity)
+        .one(db)
+        .await
+        .map_err(|e| {
+            error!("Db error loading Primary artist: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let primary = primary.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // The library layout is derived from the catalog for every release type,
     // never from the archive's own structure (ADR 0003). A release year of 0

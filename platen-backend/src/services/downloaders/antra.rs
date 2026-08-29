@@ -389,6 +389,9 @@ pub enum AntraError {
     #[error("Antra returned a file type that does not match the album type")]
     UnexpectedDownloadType,
 
+    #[error("Antra job failed with status: {0}")]
+    JobFailed(String),
+
     #[error("Could not unzip the downloaded archive")]
     UnzipFailed,
 
@@ -404,14 +407,13 @@ pub enum AntraError {
     UnexpectedArchiveShape,
 }
 
+#[async_trait::async_trait]
 impl Downloader for Antra {
-    type Error = AntraError;
-
     async fn download_album(
         &self,
         album: &album::Model,
         destination: &std::path::Path,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tracing::info!("Downloading album: {}", album.title);
         let url = format!("https://tidal.com/browse/album/{}", album.id);
 
@@ -426,6 +428,12 @@ impl Downloader for Antra {
             tracing::info!("Job status: {job_status}");
             if job_status == "complete" {
                 break;
+            }
+            if matches!(
+                job_status.to_ascii_lowercase().as_str(),
+                "failed" | "error" | "cancelled" | "canceled"
+            ) {
+                return Err(Box::new(AntraError::JobFailed(job_status)));
             }
         }
 
@@ -444,15 +452,16 @@ impl Downloader for Antra {
         if (!is_single && !is_album_or_ep) || (is_single && !is_flac) || (is_album_or_ep && !is_zip)
         {
             let _ = fs::remove_file(&download_path).await;
-            return Err(AntraError::UnexpectedDownloadType);
+            return Err(Box::new(AntraError::UnexpectedDownloadType));
         }
 
         if is_single {
-            return Self::move_single_to_destination(download_path, destination).await;
+            Self::move_single_to_destination(download_path, destination).await?;
+            return Ok(());
         }
-
         let extraction_parent = std::env::temp_dir();
-        place_archive(&download_path, destination, &extraction_parent).await
+        place_archive(&download_path, destination, &extraction_parent).await?;
+        Ok(())
     }
 }
 

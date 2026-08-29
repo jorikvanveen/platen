@@ -6,15 +6,20 @@
 	import type { PageProps } from "./$types";
 
 	let { data }: PageProps = $props();
-	let downloadState: Record<string, "downloading" | "done" | "error"> = $state({});
+	let downloadState: Record<string, "starting" | "accepted" | "error"> = $state({});
 
 	async function download(id: string) {
 		if (data.albums.find((album) => album.id === id)?.downloaded) return;
 
-		downloadState[id] = "downloading";
+		delete downloadState[id];
+		downloadState[id] = "starting";
 		try {
 			const response = await fetch(`${API_URL}/albums/${id}/download`, { method: "POST" });
-			downloadState[id] = response.ok || response.status === 409 ? "done" : "error";
+			if (!response.ok) {
+				downloadState[id] = "error";
+				return;
+			}
+			downloadState[id] = "accepted";
 		} catch {
 			downloadState[id] = "error";
 		}
@@ -45,19 +50,25 @@
 				{#if album.album_type}<span>{album.album_type}</span>{/if}
 			{/snippet}
 			{#snippet action()}
-				<button
-					class:success={album.downloaded || downloadState[album.id] === "done"}
-					class:error={downloadState[album.id] === "error"}
-					disabled={album.downloaded || downloadState[album.id] === "downloading" || downloadState[album.id] === "done"}
-					onclick={() => download(album.id)}
-				>
-					{downloadState[album.id] === "downloading" ? "Downloading…" : album.downloaded || downloadState[album.id] === "done" ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
-				</button>
+				{#if downloadState[album.id] === "accepted"}
+					<div class="active-download">
+						<a href="/downloads">View downloads</a>
+					</div>
+				{:else}
+					<button
+						class:success={album.downloaded}
+						class:error={downloadState[album.id] === "error"}
+						disabled={album.downloaded || downloadState[album.id] === "starting"}
+						onclick={() => download(album.id)}
+					>
+						{downloadState[album.id] === "starting" ? "Starting…" : album.downloaded ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
+					</button>
+				{/if}
 			{/snippet}
 			<ReleaseRow title={album.title} {metadata} {action} />
 		{/each}
 	</div>
-	{/if}
+{/if}
 
 <style>
 	.back-link {
@@ -76,7 +87,20 @@
 		text-decoration: none;
 	}
 
-	.credit-list a:hover {
+	.credit-list a:hover,
+	.active-download a:hover {
 		text-decoration: underline;
+	}
+
+	.active-download {
+		display: grid;
+		justify-items: end;
+		gap: 0.2rem;
+		white-space: nowrap;
+	}
+
+	.active-download a {
+		color: #aaa7b6;
+		font-size: 0.78rem;
 	}
 </style>

@@ -1,14 +1,14 @@
-use std::{error::Error, path::Path, sync::Arc, time::Duration};
+use std::{error::Error, path::Path};
 
-use tokio::{sync::Semaphore, task, time::sleep};
+use async_trait::async_trait;
 
 pub mod antra;
 
-pub trait Downloader {
-    type Error: Error;
+#[async_trait]
+pub trait Downloader: Send + Sync {
     async fn download_album(
         &self,
         album: &crate::entity::album::Model,
         destination: &Path,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<(), Box<dyn Error + Send + Sync>>;
 }

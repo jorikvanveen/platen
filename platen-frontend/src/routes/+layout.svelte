@@ -13,6 +13,7 @@
 <header class="site-header">
 	<div class="shell">
 		<a class="brand" href="/">Platen</a>
+		<a href="/downloads">Downloads</a>
 	</div>
 </header>
 

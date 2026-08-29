@@ -1,3 +1,5 @@
+use std::{path::PathBuf, sync::Arc};
+
 use axum::{
     Router,
     routing::{get, post},
@@ -10,8 +12,9 @@ use migration::{Migrator, MigratorTrait};
 use sea_orm::{Database, DatabaseConnection};
 use serde::Deserialize;
 use tokio::net::TcpListener;
+use tracing_subscriber::filter::EnvFilter;
 
-use crate::services::{downloaders::antra::Antra, tidal::Tidal};
+use crate::services::{download_queue::DownloadQueue, downloaders::antra::Antra, tidal::Tidal};
 
 #[allow(unused)]
 mod entity;
@@ -31,7 +34,10 @@ struct Config {
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
-    tracing_subscriber::fmt::init();
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive("sqlx::query=off".parse()?);
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     tracing::info!("Starting platen");
 
     let config: Config = Figment::new()
@@ -53,16 +59,25 @@ async fn main() -> color_eyre::Result<()> {
     Migrator::up(&db, None).await?;
 
     let bind_address = config.bind_address.clone();
-    let state = AppState {
-        tidal,
-        antra,
-        db,
-        config,
-    };
+    let (queue, worker_handle) = DownloadQueue::start(
+        db.clone(),
+        PathBuf::from(&config.music_dir),
+        Arc::new(antra),
+    );
+    let state = AppState { tidal, queue, db };
     let app = app_router(state);
     let listener = TcpListener::bind(&bind_address).await?;
 
-    axum::serve(listener, app).await?;
+    let server_result = tokio::select! {
+        result = axum::serve(listener, app) => result,
+        result = tokio::signal::ctrl_c() => {
+            result.map_err(color_eyre::Report::from)?;
+            Ok(())
+        }
+    };
+    worker_handle.abort();
+    let _ = worker_handle.await;
+    server_result?;
 
     Ok(())
 }
@@ -85,6 +100,7 @@ fn app_router(state: AppState) -> Router {
             get(routes::album::refresh_release_dates),
         )
         .route("/albums/{album_id}/download", post(routes::album::download))
+        .route("/downloads", get(routes::download::list))
         .route("/tidal/search/artists", get(routes::tidal::search_artists))
         .route("/tidal/search/albums", get(routes::tidal::search_albums))
         .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))
@@ -95,7 +111,251 @@ fn app_router(state: AppState) -> Router {
 #[derive(Clone)]
 struct AppState {
     tidal: Tidal,
-    antra: Antra,
+    queue: DownloadQueue,
     db: DatabaseConnection,
-    config: Config,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::Path,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use axum::{body::Body, body::to_bytes, http::Request};
+    use migration::MigratorTrait;
+    use sea_orm::{ActiveModelTrait, Database, Set};
+    use tokio::sync::Notify;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::{
+        entity::{album, album_artist, artist},
+        services::downloaders::Downloader,
+    };
+
+    struct GateDownloader {
+        started: Notify,
+        release: Notify,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+    }
+
+    impl GateDownloader {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                started: Notify::new(),
+                release: Notify::new(),
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+            })
+        }
+
+        fn record_start(&self) {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            let mut maximum = self.max_active.load(Ordering::SeqCst);
+            while active > maximum {
+                match self.max_active.compare_exchange(
+                    maximum,
+                    active,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break,
+                    Err(current) => maximum = current,
+                }
+            }
+            self.started.notify_one();
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Downloader for GateDownloader {
+        async fn download_album(
+            &self,
+            _album: &album::Model,
+            _destination: &Path,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.record_start();
+            self.release.notified().await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    async fn test_database() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        Migrator::up(&db, None).await.unwrap();
+        db
+    }
+
+    async fn insert_test_album(db: &DatabaseConnection, id: &str) {
+        album::ActiveModel {
+            id: Set(id.to_owned()),
+            title: Set(format!("Album {id}")),
+            album_type: Set(Some("SINGLE".to_owned())),
+            release_year: Set(2026),
+            release_month: Set(None),
+            release_day: Set(None),
+            ..Default::default()
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        artist::ActiveModel {
+            id: Set(format!("artist-{id}")),
+            name: Set("Test artist".to_owned()),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+        album_artist::ActiveModel {
+            album_id: Set(id.to_owned()),
+            artist_id: Set(format!("artist-{id}")),
+            position: Set(0),
+        }
+        .insert(db)
+        .await
+        .unwrap();
+    }
+
+    fn app_state(db: DatabaseConnection, queue: DownloadQueue) -> AppState {
+        AppState {
+            tidal: Tidal::new(String::new(), String::new()),
+            queue,
+            db,
+        }
+    }
+
+    #[tokio::test]
+    async fn enqueue_rejects_when_worker_stopped_without_retaining_job() {
+        let db = test_database().await;
+        insert_test_album(&db, "album-1").await;
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db, PathBuf::from("/tmp/music"), downloader);
+        worker_handle.abort();
+        let _ = worker_handle.await;
+
+        assert!(matches!(
+            queue.enqueue("album-1".to_owned()).await,
+            Err(crate::services::download_queue::QueueError::WorkerStopped)
+        ));
+        assert!(queue.active().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn download_route_accepts_before_worker_finishes() {
+        let db = test_database().await;
+        insert_test_album(&db, "album-1").await;
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+        let app = app_router(app_state(db, queue));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/albums/album-1/download")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 1024).await.unwrap();
+        let job: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(job["id"].as_str().is_some());
+        assert_eq!(job["album_id"], "album-1");
+        assert_eq!(job["release_name"], "Album album-1");
+        assert_eq!(job["status"], "queued");
+
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        assert_eq!(downloader.active.load(Ordering::SeqCst), 1);
+        downloader.release.notify_one();
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn downloaded_album_conflict_is_returned_before_enqueueing() {
+        let db = test_database().await;
+        insert_test_album(&db, "album-1").await;
+        album::ActiveModel {
+            id: Set("album-1".to_owned()),
+            downloaded: Set(true),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+        let app = app_router(app_state(db, queue.clone()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/albums/album-1/download")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert!(queue.active().await.is_empty());
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn one_worker_does_not_run_downloads_concurrently() {
+        let db = test_database().await;
+        insert_test_album(&db, "album-1").await;
+        insert_test_album(&db, "album-2").await;
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+        let app = app_router(app_state(db, queue));
+
+        for album_id in ["album-1", "album-2"] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/albums/{album_id}/download"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        }
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        assert_eq!(downloader.active.load(Ordering::SeqCst), 1);
+
+        downloader.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        assert_eq!(downloader.max_active.load(Ordering::SeqCst), 1);
+
+        downloader.release.notify_one();
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
 }
