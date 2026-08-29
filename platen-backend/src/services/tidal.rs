@@ -396,9 +396,9 @@ pub struct ResolvedTidalSearchedAlbum {
     pub barcode_id: Option<String>,
     pub number_of_volumes: Option<u32>,
     pub number_of_items: Option<u32>,
-    pub duration: String, // ISO 8601
+    pub duration: String,
     pub explicit: bool,
-    pub release_date: Option<String>, // 2022-04-20
+    pub release_date: Option<String>,
     pub popularity: f64,
     pub access_type: Option<String>,
     pub artists: Vec<TidalArtist>,
@@ -452,7 +452,7 @@ mod tidal_response {
 
     #[derive(Debug, Deserialize)]
     pub struct AlbumSearch {
-        pub data: Vec<AlbumSearchData>, // Should always be of length 1
+        pub data: Vec<AlbumSearchData>,
         pub included: Vec<AlbumSearchIncluded>,
     }
 
@@ -519,9 +519,9 @@ mod tidal_response {
         pub barcode_id: Option<String>,
         pub number_of_volumes: Option<u32>,
         pub number_of_items: Option<u32>,
-        pub duration: String, // ISO 8601
+        pub duration: String,
         pub explicit: bool,
-        pub release_date: Option<String>, // 2022-04-20
+        pub release_date: Option<String>,
         pub popularity: f64,
         pub access_type: Option<String>,
         pub availability: Option<Vec<String>>,
@@ -549,8 +549,6 @@ mod tidal_response {
         pub r#type: String,
         pub attributes: AlbumSearchIncludedAttributes,
     }
-
-    // ---- Compound documents (include=...) ----
 
     #[derive(Debug, Deserialize)]
     #[allow(dead_code)]
@@ -589,8 +587,6 @@ mod tidal_response {
     pub struct AlbumWithArtistsRelationships {
         pub artists: Option<AlbumSearchRelationshipsAlbums>,
     }
-
-    // ---- Artist search ----
 
     #[derive(Debug, Deserialize)]
     pub struct ArtistSearchDocument {
