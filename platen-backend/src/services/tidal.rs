@@ -138,7 +138,7 @@ impl Tidal {
     }
 
     async fn ensure_token(&self) -> Result<String, TidalError> {
-        {   
+        {
             let auth = self.auth.lock().await;
             let now = chrono::Utc::now();
             if let Some(token) = auth.token.clone().filter(|_| auth.expires_at > now) {

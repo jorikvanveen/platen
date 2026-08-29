@@ -77,7 +77,10 @@ fn app_router(state: AppState) -> Router {
             post(routes::album::create_artist_scoped),
         )
         .route("/albums/{album_id}", post(routes::album::create))
-        .route("/artists/{artist_id}/albums", get(routes::album::fetch_all_artist_albums))
+        .route(
+            "/artists/{artist_id}/albums",
+            get(routes::album::fetch_all_artist_albums),
+        )
         .route(
             "/albums/refresh-release-dates",
             get(routes::album::refresh_release_dates),

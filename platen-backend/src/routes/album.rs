@@ -99,12 +99,10 @@ pub async fn create(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     {
-        let artists = credited_artists(&db, &existing.id)
-            .await
-            .map_err(|e| {
-                error!("Db error: {e:#?}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+        let artists = credited_artists(&db, &existing.id).await.map_err(|e| {
+            error!("Db error: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
         return Ok(Json(to_dto(existing, artists)));
     }
 
@@ -227,7 +225,11 @@ pub(crate) fn parse_release_date(value: &str) -> Result<ReleaseDate, &'static st
 
 #[cfg(test)]
 mod tests {
-    use super::{ReleaseDate, parse_release_date};
+    use migration::MigratorTrait;
+    use sea_orm::{ActiveModelTrait, Database, Set};
+
+    use super::{ReleaseDate, credited_artists, parse_release_date, to_dto};
+    use crate::entity::{album, album_artist, artist};
 
     #[test]
     fn parses_release_date_at_each_supported_precision() {
@@ -272,6 +274,54 @@ mod tests {
                 "{value} should be invalid"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn album_dto_orders_credits_primary_first() {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+
+        let album = album::ActiveModel {
+            id: Set("album-1".into()),
+            title: Set("Shared Credit".into()),
+            album_type: Set(Some("ALBUM".into())),
+            release_year: Set(2026),
+            release_month: Set(Some(8)),
+            release_day: Set(Some(29)),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        for (id, name) in [("primary", "Primary"), ("featured", "Featured")] {
+            artist::ActiveModel {
+                id: Set(id.into()),
+                name: Set(name.into()),
+            }
+            .insert(&db)
+            .await
+            .unwrap();
+        }
+        for (artist_id, position) in [("featured", 1), ("primary", 0)] {
+            album_artist::ActiveModel {
+                album_id: Set(album.id.clone()),
+                artist_id: Set(artist_id.into()),
+                position: Set(position),
+            }
+            .insert(&db)
+            .await
+            .unwrap();
+        }
+
+        let artists = credited_artists(&db, &album.id).await.unwrap();
+        let dto = to_dto(album, artists);
+
+        assert_eq!(
+            dto.artists
+                .into_iter()
+                .map(|artist| artist.id)
+                .collect::<Vec<_>>(),
+            ["primary", "featured"]
+        );
     }
 }
 
@@ -392,12 +442,10 @@ pub async fn download_artist_scoped(
     state: State<AppState>,
     Path((artist_id, album_id)): Path<(String, String)>,
 ) -> Result<(), StatusCode> {
-    let artists = credited_artists(&state.db, &album_id)
-        .await
-        .map_err(|e| {
-            error!("Db error: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let artists = credited_artists(&state.db, &album_id).await.map_err(|e| {
+        error!("Db error: {e:#?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let primary = artists.first().ok_or(StatusCode::NOT_FOUND)?;
     if primary.id != artist_id {
         return Err(StatusCode::NOT_FOUND);
@@ -425,9 +473,7 @@ pub async fn download(
         error!("Db error: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let primary = artists
-        .first()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+    let primary = artists.first().ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // The library layout is derived from the catalog for every release type,
     // never from the archive's own structure (ADR 0003). A release year of 0

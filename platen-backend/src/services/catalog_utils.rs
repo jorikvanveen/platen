@@ -1,4 +1,3 @@
-
 use sea_orm::{ActiveValue, ConnectionTrait, DbErr, EntityTrait};
 
 use crate::{
@@ -112,4 +111,3 @@ mod tests {
         );
     }
 }
-
