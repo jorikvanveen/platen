@@ -82,16 +82,18 @@ async fn main() -> color_eyre::Result<()> {
         .route("/artists/{id}", post(routes::artist::create))
         .route(
             "/artists/{artist_id}/albums/{album_id}",
-            post(routes::album::create),
+            post(routes::album::create_artist_scoped),
         )
-        .route("/artists/{artist_id}/albums", get(routes::album::fetch_all))
+        .route("/albums/{album_id}", post(routes::album::create))
+        .route("/artists/{artist_id}/albums", get(routes::album::fetch_all_artist_albums))
         .route(
             "/albums/refresh-release-dates",
             get(routes::album::refresh_release_dates),
         )
+        .route("/albums/{album_id}/download", post(routes::album::download))
         .route(
             "/artists/{artist_id}/albums/{album_id}/download",
-            post(routes::album::download),
+            post(routes::album::download_artist_scoped),
         )
         .route("/tidal/search/artists", get(routes::tidal::search_artists))
         .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))

@@ -8,7 +8,7 @@
 
     async function download(id: string) {
       download_state[id] = "downloading";
-      const resp = await fetch(`${API_URL}/artists/${data.artist.id}/albums/${id}/download`, {
+      const resp = await fetch(`${API_URL}/albums/${id}/download`, {
         method: "POST"
       });
 
@@ -26,6 +26,7 @@
     <thead>
         <tr>
             <th>Name</th>
+            <th>Artists</th>
             <th>Downloaded</th>
             <th></th>
         </tr>
@@ -34,6 +35,7 @@
         {#each data.albums as album}
             <tr>
                 <td>{album.title}</td>
+                <td>{album.artists.map((a) => a.name).join(", ")}</td>
                 <td>
                     {#if album.jellyfin_id != null || download_state[album.id] == "done"}
                         Downloaded

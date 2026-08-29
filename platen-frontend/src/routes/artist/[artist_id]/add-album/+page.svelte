@@ -7,7 +7,7 @@
 
     let added_ids: string[] = $state([]);
     async function addAlbum(id: string) {
-      let resp = await fetch(`${API_URL}/artists/${data.artist.id}/albums/${id}`, {
+      let resp = await fetch(`${API_URL}/albums/${id}`, {
         method: "POST"
       })
 

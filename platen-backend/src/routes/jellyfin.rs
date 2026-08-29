@@ -1,14 +1,16 @@
 use axum::{Json, extract::State};
 use reqwest::StatusCode;
-use sea_orm::{ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ActiveValue, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, Set,
+    TransactionTrait,
+};
 use tracing::{error, info, warn};
 
 use crate::{
     AppState,
     entity::{album, artist},
     routes::album::{ReleaseDate, parse_release_date},
-    services::import::{Failure as ServiceFailure, Status as ServiceStatus, Summary as ServiceSummary},
-    services::musicbrainz::RequestError as MbRequestError,
+    services::{catalog_utils, import::{Failure as ServiceFailure, Status as ServiceStatus, Summary as ServiceSummary}, musicbrainz::RequestError as MbRequestError, tidal::TidalArtist},
 };
 
 pub mod dto {
@@ -231,7 +233,6 @@ enum AlbumDecision {
     },
     Create {
         id: String,
-        artist_id: String,
         title: String,
         album_type: Option<String>,
         jellyfin_id: String,
@@ -279,12 +280,10 @@ fn decide_artist(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn decide_album_insert(
     existing_by_tidal_id: Option<album::Model>,
     title: &str,
     tidal_hit: &crate::services::tidal::ResolvedTidalSearchedAlbum,
-    tidal_artist: &crate::services::tidal::TidalArtist,
     jf_album: &crate::services::jellyfin::JellyfinAlbum,
     mb_release_group_id: &str,
     release_date: Option<ReleaseDate>,
@@ -309,7 +308,6 @@ fn decide_album_insert(
         }
         None => AlbumDecision::Create {
             id: tidal_hit.id.clone(),
-            artist_id: tidal_artist.id.clone(),
             title: title.to_string(),
             album_type: Some(tidal_hit.r#type.clone()),
             jellyfin_id: jf_album.id.clone(),
@@ -397,124 +395,168 @@ async fn resolve_album(
             error!("Tidal get_album_artists failed: {e:#?}");
             "tidal album fetch failed".to_string()
         })?;
-    let tidal_artist = tidal_artists
-        .into_iter()
-        .next()
-        .ok_or_else(|| "tidal album has no artists".to_string())?;
+    let jf_album = jf_album.clone();
+    let outcome = db
+        .transaction::<_, Outcome, String>(|txn| {
+            Box::pin(async move {
+                let primary_tidal_artist = tidal_artists
+                    .first()
+                    .ok_or_else(|| "tidal album has no artists".to_string())?;
 
-    let existing_artist = artist::Entity::find_by_id(tidal_artist.id.clone())
-        .one(db)
+                // The first Tidal credit anchors the MB artist link; the remaining
+                // credits are upserted without touching their MB identity.
+                let existing_artist = artist::Entity::find_by_id(primary_tidal_artist.id.clone())
+                    .one(txn)
+                    .await
+                    .map_err(|e| {
+                        error!("Db error looking up artist: {e:#?}");
+                        "database error".to_string()
+                    })?;
+
+                match decide_artist(existing_artist, primary_tidal_artist, mb_artist_id.as_deref()) {
+                    ArtistDecision::LinkMusicBrainz {
+                        existing,
+                        mb_artist_id,
+                    } => {
+                        let mut active: artist::ActiveModel = existing.into();
+                        active.musicbrainz_artist_id = Set(Some(mb_artist_id));
+                        active.update(txn).await.map_err(|e| {
+                            error!("Db error updating artist MB artist ID: {e:#?}");
+                            "database error".to_string()
+                        })?;
+                    }
+                    ArtistDecision::Insert {
+                        id,
+                        name,
+                        mb_artist_id,
+                    } => {
+                        artist::ActiveModel {
+                            id: ActiveValue::Set(id),
+                            name: ActiveValue::Set(name),
+                            musicbrainz_artist_id: ActiveValue::Set(mb_artist_id),
+                        }
+                        .insert(txn)
+                        .await
+                        .map_err(|e| {
+                            error!("Db error inserting artist: {e:#?}");
+                            "database error".to_string()
+                        })?;
+                    }
+                    ArtistDecision::Noop => {}
+                }
+
+                for tidal_artist in tidal_artists.iter().skip(1) {
+                    upsert_artist(txn, tidal_artist).await?;
+                }
+
+                // A row with this Tidal ID may already exist, created earlier via the
+                // Tidal-by-ID creation route; link it instead of inserting a duplicate.
+                let existing_by_tidal_id = album::Entity::find_by_id(first_hit.id.clone())
+                    .one(txn)
+                    .await
+                    .map_err(|e| {
+                        error!("Db error looking up album by Tidal ID: {e:#?}");
+                        "database error".to_string()
+                    })?;
+
+                let release_date = if existing_by_tidal_id.is_none() {
+                    let date = first_hit
+                        .release_date
+                        .as_deref()
+                        .ok_or_else(|| "tidal album has no release date".to_string())?;
+                    Some(
+                        parse_release_date(date)
+                            .map_err(|e| format!("invalid tidal release date: {e}"))?,
+                    )
+                } else {
+                    None
+                };
+
+                match decide_album_insert(
+                    existing_by_tidal_id,
+                    &title,
+                    &first_hit,
+                    &jf_album,
+                    &mb_release_group_id,
+                    release_date,
+                ) {
+                    AlbumDecision::LinkExisting {
+                        existing,
+                        jellyfin_id,
+                        musicbrainz_release_group_id,
+                    } => {
+                        let mut active: album::ActiveModel = existing.into();
+                        active.jellyfin_id = Set(jellyfin_id);
+                        active.musicbrainz_release_group_id = Set(musicbrainz_release_group_id);
+                        active.update(txn).await.map_err(|e| {
+                            error!("Db error linking album by Tidal ID: {e:#?}");
+                            "database error".to_string()
+                        })?;
+                        insert_credits(txn, &first_hit.id, &tidal_artists).await?;
+                        Ok(Outcome::Linked)
+                    }
+                    AlbumDecision::Create {
+                        id,
+                        title,
+                        album_type,
+                        jellyfin_id,
+                        musicbrainz_release_group_id,
+                        release_date,
+                    } => {
+                        album::ActiveModel {
+                            id: ActiveValue::Set(id),
+                            title: ActiveValue::Set(title),
+                            album_type: ActiveValue::Set(album_type),
+                            jellyfin_id: ActiveValue::Set(Some(jellyfin_id)),
+                            musicbrainz_release_group_id:
+                                ActiveValue::Set(Some(musicbrainz_release_group_id)),
+                            match_method: ActiveValue::Set(Some("name_search".to_string())),
+                            release_year: ActiveValue::Set(release_date.year),
+                            release_month: ActiveValue::Set(release_date.month),
+                            release_day: ActiveValue::Set(release_date.day),
+                        }
+                        .insert(txn)
+                        .await
+                        .map_err(|e| {
+                            error!("Db error inserting album: {e:#?}");
+                            "database error".to_string()
+                        })?;
+                        insert_credits(txn, &first_hit.id, &tidal_artists).await?;
+                        Ok(Outcome::Created)
+                    }
+                }
+            })
+        })
         .await
         .map_err(|e| {
-            error!("Db error looking up artist: {e:#?}");
-            "database error".to_string()
+            error!("Db error resolving album transaction: {e:#?}");
+            "database transaction failed".to_string()
         })?;
 
-    match decide_artist(existing_artist, &tidal_artist, mb_artist_id.as_deref()) {
-        ArtistDecision::LinkMusicBrainz {
-            existing,
-            mb_artist_id,
-        } => {
-            let mut active: artist::ActiveModel = existing.into();
-            active.musicbrainz_artist_id = Set(Some(mb_artist_id));
-            active.update(db).await.map_err(|e| {
-                error!("Db error updating artist MB artist ID: {e:#?}");
-                "database error".to_string()
-            })?;
-        }
-        ArtistDecision::Insert {
-            id,
-            name,
-            mb_artist_id,
-        } => {
-            artist::ActiveModel {
-                id: ActiveValue::Set(id),
-                name: ActiveValue::Set(name),
-                musicbrainz_artist_id: ActiveValue::Set(mb_artist_id),
-            }
-            .insert(db)
-            .await
-            .map_err(|e| {
-                error!("Db error inserting artist: {e:#?}");
-                "database error".to_string()
-            })?;
-        }
-        ArtistDecision::Noop => {}
-    }
+    Ok(outcome)
+}
 
-    // A row with this Tidal ID may already exist, created earlier via the
-    // Tidal-by-ID creation route; link it instead of inserting a duplicate.
-    let existing_by_tidal_id = album::Entity::find_by_id(first_hit.id.clone())
-        .one(db)
+async fn upsert_artist(
+    db: &impl ConnectionTrait,
+    tidal_artist: &TidalArtist,
+) -> Result<(), String> {
+    catalog_utils::upsert_artist(db, tidal_artist).await.map_err(|e| {
+        error!("Db error upserting artist: {e:#?}");
+        "database error".to_string()
+    })
+}
+
+async fn insert_credits(
+    db: &impl ConnectionTrait,
+    album_id: &str,
+    tidal_artists: &[TidalArtist],
+) -> Result<(), String> {
+    catalog_utils::insert_credits(db, album_id, tidal_artists)
         .await
         .map_err(|e| {
-            error!("Db error looking up album by Tidal ID: {e:#?}");
+            error!("Db error inserting album_artist: {e:#?}");
             "database error".to_string()
-        })?;
-
-    let release_date = if existing_by_tidal_id.is_none() {
-        let date = first_hit
-            .release_date
-            .as_deref()
-            .ok_or_else(|| "tidal album has no release date".to_string())?;
-        Some(parse_release_date(date).map_err(|e| format!("invalid tidal release date: {e}"))?)
-    } else {
-        None
-    };
-
-    match decide_album_insert(
-        existing_by_tidal_id,
-        &title,
-        &first_hit,
-        &tidal_artist,
-        jf_album,
-        &mb_release_group_id,
-        release_date,
-    ) {
-        AlbumDecision::LinkExisting {
-            existing,
-            jellyfin_id,
-            musicbrainz_release_group_id,
-        } => {
-            let mut active: album::ActiveModel = existing.into();
-            active.jellyfin_id = Set(jellyfin_id);
-            active.musicbrainz_release_group_id = Set(musicbrainz_release_group_id);
-            active.update(db).await.map_err(|e| {
-                error!("Db error linking album by Tidal ID: {e:#?}");
-                "database error".to_string()
-            })?;
-            Ok(Outcome::Linked)
-        }
-        AlbumDecision::Create {
-            id,
-            artist_id,
-            title,
-            album_type,
-            jellyfin_id,
-            musicbrainz_release_group_id,
-            release_date,
-        } => {
-            album::ActiveModel {
-                id: ActiveValue::Set(id),
-                artist_id: ActiveValue::Set(artist_id),
-                title: ActiveValue::Set(title),
-                album_type: ActiveValue::Set(album_type),
-                jellyfin_id: ActiveValue::Set(Some(jellyfin_id)),
-                musicbrainz_release_group_id: ActiveValue::Set(Some(musicbrainz_release_group_id)),
-                match_method: ActiveValue::Set(Some("name_search".to_string())),
-                release_year: ActiveValue::Set(release_date.year),
-                release_month: ActiveValue::Set(release_date.month),
-                release_day: ActiveValue::Set(release_date.day),
-            }
-            .insert(db)
-            .await
-            .map_err(|e| {
-                error!("Db error inserting album: {e:#?}");
-                "database error".to_string()
-            })?;
-            Ok(Outcome::Created)
-        }
-    }
+        })
 }
 
 #[cfg(test)]
@@ -567,7 +609,6 @@ mod tests {
     ) -> album::Model {
         album::Model {
             id: id.to_string(),
-            artist_id: "artist-1".to_string(),
             title: "Some Album".to_string(),
             album_type: None,
             jellyfin_id: jellyfin_id.map(str::to_string),
@@ -677,7 +718,6 @@ mod tests {
 
     #[test]
     fn album_none_creates() {
-        let ta = tidal_artist("ta-1", "The Artist");
         let hit = tidal_hit("tidal-1", "EP");
         let jf = jf_album("jf-1");
         assert_eq!(
@@ -685,7 +725,6 @@ mod tests {
                 None,
                 "Some Album",
                 &hit,
-                &ta,
                 &jf,
                 "mbid-1",
                 Some(ReleaseDate {
@@ -696,7 +735,6 @@ mod tests {
             ),
             AlbumDecision::Create {
                 id: "tidal-1".to_string(),
-                artist_id: "ta-1".to_string(),
                 title: "Some Album".to_string(),
                 album_type: Some("EP".to_string()),
                 jellyfin_id: "jf-1".to_string(),
@@ -713,7 +751,6 @@ mod tests {
     #[test]
     fn album_existing_without_ids_links_both() {
         let existing = album_model("tidal-1", None, None);
-        let ta = tidal_artist("ta-1", "The Artist");
         let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
@@ -721,7 +758,6 @@ mod tests {
                 Some(existing.clone()),
                 "Some Album",
                 &hit,
-                &ta,
                 &jf,
                 "mbid-1",
                 None,
@@ -737,7 +773,6 @@ mod tests {
     #[test]
     fn album_existing_with_jellyfin_id_preserves_it() {
         let existing = album_model("tidal-1", Some("old-jf"), None);
-        let ta = tidal_artist("ta-1", "The Artist");
         let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
@@ -745,7 +780,6 @@ mod tests {
                 Some(existing.clone()),
                 "Some Album",
                 &hit,
-                &ta,
                 &jf,
                 "mbid-1",
                 None,
@@ -761,7 +795,6 @@ mod tests {
     #[test]
     fn album_existing_with_mbid_preserves_it() {
         let existing = album_model("tidal-1", None, Some("old-mbid"));
-        let ta = tidal_artist("ta-1", "The Artist");
         let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
@@ -769,7 +802,6 @@ mod tests {
                 Some(existing.clone()),
                 "Some Album",
                 &hit,
-                &ta,
                 &jf,
                 "mbid-1",
                 None,
@@ -785,7 +817,6 @@ mod tests {
     #[test]
     fn album_existing_with_both_ids_preserves_both() {
         let existing = album_model("tidal-1", Some("old-jf"), Some("old-mbid"));
-        let ta = tidal_artist("ta-1", "The Artist");
         let hit = tidal_hit("tidal-1", "ALBUM");
         let jf = jf_album("jf-1");
         assert_eq!(
@@ -793,7 +824,6 @@ mod tests {
                 Some(existing.clone()),
                 "Some Album",
                 &hit,
-                &ta,
                 &jf,
                 "mbid-1",
                 None,

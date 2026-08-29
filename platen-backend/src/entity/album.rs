@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: String,
-    pub artist_id: String,
     pub title: String,
     pub album_type: Option<String>,
     pub jellyfin_id: Option<String>,
@@ -21,19 +20,22 @@ pub struct Model {
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
-    #[sea_orm(
-        belongs_to = "super::artist::Entity",
-        from = "Column::ArtistId",
-        to = "super::artist::Column::Id",
-        on_update = "Cascade",
-        on_delete = "Cascade"
-    )]
-    Artist,
+    #[sea_orm(has_many = "super::album_artist::Entity")]
+    AlbumArtist,
+}
+
+impl Related<super::album_artist::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::AlbumArtist.def()
+    }
 }
 
 impl Related<super::artist::Entity> for Entity {
     fn to() -> RelationDef {
-        Relation::Artist.def()
+        super::album_artist::Relation::Artist.def()
+    }
+    fn via() -> Option<RelationDef> {
+        Some(super::album_artist::Relation::Album.def().rev())
     }
 }
 

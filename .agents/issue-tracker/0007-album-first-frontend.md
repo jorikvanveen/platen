@@ -6,7 +6,7 @@ credited artists, and adds the whole bundle in one click. The artist search
 page becomes search-and-add-releases: picking an artist browses their Tidal
 discography, and adding a release creates the artist as a side effect. Bare
 artist creation is gone. The per-artist page shows every credited artist on
-each album row, primary first, joined "A, B & C". The homepage artist list is
+each album row, primary first. The homepage artist list is
 unchanged.
 
 Per the multi-artist credits plan (decisions 3, 4, 17, 18, 19).

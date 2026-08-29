@@ -3,4 +3,5 @@
 pub mod prelude;
 
 pub mod album;
+pub mod album_artist;
 pub mod artist;

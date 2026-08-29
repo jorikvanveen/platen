@@ -8,14 +8,16 @@ use axum::{
 };
 use reqwest::StatusCode;
 use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, ModelTrait, QueryFilter, Set,
+    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
 };
 use tracing::{error, info};
 
 use crate::{
     AppState,
-    entity::{self, album},
-    services::downloaders::Downloader,
+    entity::{self, album, album_artist, artist},
+    routes::artist::dto::Artist,
+    services::{catalog_utils, downloaders::Downloader},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,11 +31,13 @@ pub mod dto {
     use serde::{Deserialize, Serialize};
     use ts_rs::TS;
 
+    use super::Artist;
+
     #[derive(Debug, Serialize, Deserialize, TS)]
     #[ts(export)]
     pub struct Album {
         pub id: String,
-        pub artist_id: String,
+        pub artists: Vec<Artist>,
         pub title: String,
         pub album_type: Option<String>,
         pub jellyfin_id: Option<String>,
@@ -52,29 +56,46 @@ pub mod dto {
     }
 }
 
-impl From<album::Model> for dto::Album {
-    fn from(model: album::Model) -> Self {
-        dto::Album {
-            id: model.id,
-            artist_id: model.artist_id,
-            title: model.title,
-            album_type: model.album_type,
-            jellyfin_id: model.jellyfin_id,
-            musicbrainz_release_group_id: model.musicbrainz_release_group_id,
-            match_method: model.match_method,
-            release_year: model.release_year,
-            release_month: model.release_month,
-            release_day: model.release_day,
-        }
+fn to_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
+    dto::Album {
+        id: model.id,
+        artists,
+        title: model.title,
+        album_type: model.album_type,
+        jellyfin_id: model.jellyfin_id,
+        musicbrainz_release_group_id: model.musicbrainz_release_group_id,
+        match_method: model.match_method,
+        release_year: model.release_year,
+        release_month: model.release_month,
+        release_day: model.release_day,
     }
+}
+
+async fn credited_artists(
+    db: &sea_orm::DatabaseConnection,
+    album_id: &str,
+) -> Result<Vec<Artist>, sea_orm::DbErr> {
+    // A plain join only selects the from-entity's columns, so the artist
+    // columns must come through find_also_related, not into_model.
+    let rows = album_artist::Entity::find()
+        .filter(album_artist::Column::AlbumId.eq(album_id))
+        .find_also_related(artist::Entity)
+        .order_by_asc(album_artist::Column::Position)
+        .all(db)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(_, artist)| artist)
+        .map(Into::into)
+        .collect())
 }
 
 #[axum::debug_handler]
 pub async fn create(
     State(AppState { tidal, db, .. }): State<AppState>,
-    Path((artist_id, album_id)): Path<(String, String)>,
+    Path(album_id): Path<String>,
 ) -> Result<Json<dto::Album>, StatusCode> {
-    info!("Creating album {album_id} on artist {artist_id}");
+    info!("Creating album {album_id}");
     if let Some(existing) = album::Entity::find_by_id(&album_id)
         .one(&db)
         .await
@@ -83,11 +104,21 @@ pub async fn create(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     {
-        return Ok(Json(existing.into()));
+        let artists = credited_artists(&db, &existing.id)
+            .await
+            .map_err(|e| {
+                error!("Db error: {e:#?}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+        return Ok(Json(to_dto(existing, artists)));
     }
 
     let tidal_album = tidal
         .get_album(&album_id)
+        .await
+        .map_err(crate::routes::utils::map_tidal_error)?;
+    let tidal_artists = tidal
+        .get_album_artists(&album_id)
         .await
         .map_err(crate::routes::utils::map_tidal_error)?;
 
@@ -97,9 +128,8 @@ pub async fn create(
         .and_then(|date| parse_release_date(date).ok())
         .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
 
-    let model = album::ActiveModel {
+    let new_album = album::ActiveModel {
         id: ActiveValue::Set(tidal_album.id),
-        artist_id: ActiveValue::Set(artist_id),
         title: ActiveValue::Set(tidal_album.title),
         album_type: ActiveValue::Set(Some(tidal_album.r#type)),
         jellyfin_id: ActiveValue::Set(None),
@@ -108,15 +138,53 @@ pub async fn create(
         release_year: ActiveValue::Set(release_date.year),
         release_month: ActiveValue::Set(release_date.month),
         release_day: ActiveValue::Set(release_date.day),
-    }
-    .insert(&db)
-    .await
-    .map_err(|e| {
-        error!("Db error: {e:#?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    };
+    let artists: Vec<Artist> = tidal_artists
+        .iter()
+        .map(|a| {
+            artist::Model {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                musicbrainz_artist_id: None,
+            }
+            .into()
+        })
+        .collect();
 
-    Ok(Json(model.into()))
+    let model = db
+        .transaction::<_, album::Model, sea_orm::DbErr>(|txn| {
+            Box::pin(async move {
+                let model = new_album.insert(txn).await?;
+                for tidal_artist in &tidal_artists {
+                    catalog_utils::upsert_artist(txn, tidal_artist).await?;
+                }
+                catalog_utils::insert_credits(txn, &model.id, &tidal_artists).await?;
+                Ok(model)
+            })
+        })
+        .await
+        .map_err(|e| {
+            error!("Db error creating album transaction: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(to_dto(model, artists)))
+}
+
+/// Legacy artist-scoped creation path, kept so existing clients keep working.
+/// The album is still created from its Tidal ID with all credited artists;
+/// `artist_id` only guards that the album's primary artist matches the path.
+#[axum::debug_handler]
+pub async fn create_artist_scoped(
+    state: State<AppState>,
+    Path((artist_id, album_id)): Path<(String, String)>,
+) -> Result<Json<dto::Album>, StatusCode> {
+    let album = create(state, Path(album_id)).await?;
+    let primary = album.0.artists.first().ok_or(StatusCode::NOT_FOUND)?;
+    if primary.id != artist_id {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    Ok(album)
 }
 
 pub(crate) fn parse_release_date(value: &str) -> Result<ReleaseDate, &'static str> {
@@ -271,7 +339,7 @@ pub async fn refresh_release_dates(
     Ok(Json(summary))
 }
 
-pub async fn fetch_all(
+pub async fn fetch_all_artist_albums(
     State(AppState { db, .. }): State<AppState>,
     Path(artist_id): Path<String>,
 ) -> Result<Json<Vec<dto::Album>>, StatusCode> {
@@ -285,8 +353,11 @@ pub async fn fetch_all(
         .ok_or(StatusCode::NOT_FOUND)?;
     info!("Found artist: {:?}", artist);
 
-    let albums = artist
-        .find_related(album::Entity)
+    let rows = album_artist::Entity::find()
+        .filter(album_artist::Column::ArtistId.eq(&artist_id))
+        .find_also_related(album::Entity)
+        .order_by_asc(album_artist::Column::AlbumId)
+        .order_by_asc(album_artist::Column::Position)
         .all(&db)
         .await
         .map_err(|e| {
@@ -294,7 +365,40 @@ pub async fn fetch_all(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    Ok(Json(albums.into_iter().map(Into::into).collect()))
+    let mut result = Vec::with_capacity(rows.len());
+    for (_, album_model) in rows {
+        let Some(album_model) = album_model else {
+            continue;
+        };
+        let artists = credited_artists(&db, &album_model.id).await.map_err(|e| {
+            error!("Db error: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+        result.push(to_dto(album_model, artists));
+    }
+
+    Ok(Json(result))
+}
+
+/// Legacy artist-scoped download path, kept so existing clients keep working.
+/// The destination still comes from the primary artist; `artist_id` only
+/// guards that the album's primary artist matches the path.
+#[axum::debug_handler]
+pub async fn download_artist_scoped(
+    state: State<AppState>,
+    Path((artist_id, album_id)): Path<(String, String)>,
+) -> Result<(), StatusCode> {
+    let artists = credited_artists(&state.db, &album_id)
+        .await
+        .map_err(|e| {
+            error!("Db error: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    let primary = artists.first().ok_or(StatusCode::NOT_FOUND)?;
+    if primary.id != artist_id {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    download(state, Path(album_id)).await
 }
 
 #[axum::debug_handler]
@@ -302,9 +406,9 @@ pub async fn download(
     State(AppState {
         antra, db, config, ..
     }): State<AppState>,
-    Path((artist_id, album_id)): Path<(String, String)>,
+    Path(album_id): Path<String>,
 ) -> Result<(), StatusCode> {
-    let artist = entity::artist::Entity::find_by_id(&artist_id)
+    let album = album::Entity::find_by_id(&album_id)
         .one(&db)
         .await
         .map_err(|e| {
@@ -313,16 +417,13 @@ pub async fn download(
         })?
         .ok_or(StatusCode::NOT_FOUND)?;
 
-    let album = artist
-        .find_related(album::Entity)
-        .filter(album::Column::Id.eq(album_id.clone()))
-        .one(&db)
-        .await
-        .map_err(|e| {
-            error!("Db error: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let artists = credited_artists(&db, &album.id).await.map_err(|e| {
+        error!("Db error: {e:#?}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let primary = artists
+        .first()
+        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // The library layout is derived from the catalog for every release type,
     // never from the archive's own structure (ADR 0003). A release year of 0
@@ -335,7 +436,7 @@ pub async fn download(
         album.release_year
     };
     let album_directory = format!("{} ({})", album.title, release_year);
-    let destination = music_dir.join(&artist.name).join(album_directory);
+    let destination = music_dir.join(&primary.name).join(album_directory);
 
     antra
         .download_album(&album, &destination)

@@ -14,11 +14,11 @@ and the glossary's Album credit and Primary artist definitions.
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Credits table exists: album reference, artist reference, position; composite unique on album plus artist; no cascade deletes
-- [ ] New create route: `POST /albums/{album_id}` adds the album and all its Tidal-credited artists in credit order
-- [ ] Adding an already-existing album ID is idempotent (returns the existing album, no duplicate rows)
-- [ ] Artists are upserted: inserted when absent, left untouched when present
-- [ ] Old artist-scoped album create route still works
-- [ ] ADR records "Tidal credits define album-artist links" and the trade-off against MusicBrainz credits
+- [x] Credits table exists: album reference, artist reference, position; composite unique on album plus artist; no cascade deletes
+- [x] New create route: `POST /albums/{album_id}` adds the album and all its Tidal-credited artists in credit order
+- [x] Adding an already-existing album ID is idempotent (returns the existing album, no duplicate rows)
+- [x] Artists are upserted: inserted when absent, left untouched when present
+- [x] Old artist-scoped album create route still works
+- [x] ADR records "Tidal credits define album-artist links" and the trade-off against MusicBrainz credits

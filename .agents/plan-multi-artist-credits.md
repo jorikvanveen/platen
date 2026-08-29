@@ -97,7 +97,7 @@ the model just discards it.
   pick one, browse their Tidal discography (existing
   `GET /tidal/artists/{id}`), add albums from there. No bare artist creation.
 - Per-artist page (`/artist/[artist_id]`): keep discography browse; album
-  rows show all credited artists joined "A, B & C", primary first.
+  rows show all credited artists, primary first.
 - Homepage: unchanged (artist list), per Q17.
 
 ### Docs
