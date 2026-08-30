@@ -12,10 +12,12 @@ pub async fn upsert_artist(
     artist::Entity::insert(artist::ActiveModel {
         id: ActiveValue::Set(tidal_artist.id.clone()),
         name: ActiveValue::Set(tidal_artist.name.clone()),
+        profile_image_url: ActiveValue::Set(tidal_artist.profile_image_url.clone()),
     })
     .on_conflict_do_nothing()
     .exec(db)
     .await?;
+
     Ok(())
 }
 
@@ -70,10 +72,12 @@ mod tests {
             TidalArtist {
                 id: "tidal-artist-1".into(),
                 name: "BLCKK".into(),
+                profile_image_url: Some("https://cdn.example/blckk".into()),
             },
             TidalArtist {
                 id: "tidal-artist-2".into(),
                 name: "ISSBROKIE".into(),
+                profile_image_url: None,
             },
         ];
         for tidal_artist in &tidal_artists {
@@ -109,6 +113,35 @@ mod tests {
                 ("tidal-artist-1".to_string(), "BLCKK".to_string()),
                 ("tidal-artist-2".to_string(), "ISSBROKIE".to_string())
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn upsert_artist_does_not_overwrite_existing_profile_image() {
+        let db = Database::connect("sqlite::memory:").await.unwrap();
+        migration::Migrator::up(&db, None).await.unwrap();
+
+        let artist = TidalArtist {
+            id: "tidal-artist-1".into(),
+            name: "BLCKK".into(),
+            profile_image_url: Some("https://cdn.example/original".into()),
+        };
+        upsert_artist(&db, &artist).await.unwrap();
+
+        let replacement_image = TidalArtist {
+            profile_image_url: Some("https://cdn.example/replacement".into()),
+            ..artist
+        };
+        upsert_artist(&db, &replacement_image).await.unwrap();
+
+        let stored_artist = artist::Entity::find_by_id("tidal-artist-1")
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored_artist.profile_image_url.as_deref(),
+            Some("https://cdn.example/original")
         );
     }
 }

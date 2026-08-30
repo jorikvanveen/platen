@@ -254,6 +254,7 @@ mod tests {
         artist::ActiveModel {
             id: Set(format!("artist-{id}")),
             name: Set("Test artist".to_owned()),
+            ..Default::default()
         }
         .insert(db)
         .await

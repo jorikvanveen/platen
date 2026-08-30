@@ -20,6 +20,7 @@ pub mod dto {
     pub struct TidalArtist {
         pub id: String,
         pub name: String,
+        pub profile_image_url: Option<String>,
     }
 
     #[derive(Debug, Serialize, Deserialize, TS)]
@@ -31,6 +32,13 @@ pub mod dto {
         pub album_type: String,
         pub release_date: Option<String>,
         pub popularity: f64,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, TS)]
+    #[ts(export)]
+    pub struct TidalArtistAlbums {
+        pub artist: TidalArtist,
+        pub albums: Vec<TidalAlbum>,
     }
 
     #[derive(Debug, Serialize, Deserialize, TS)]
@@ -51,6 +59,7 @@ impl From<services::tidal::TidalArtist> for dto::TidalArtist {
         dto::TidalArtist {
             id: a.id,
             name: a.name,
+            profile_image_url: a.profile_image_url,
         }
     }
 }
@@ -116,11 +125,12 @@ pub async fn search_albums(
 pub async fn get_artist_albums(
     State(AppState { tidal, .. }): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Vec<dto::TidalAlbum>>, StatusCode> {
+) -> Result<Json<dto::TidalArtistAlbums>, StatusCode> {
     info!("Fetching tidal artist {id} with albums");
-    let albums = tidal
-        .get_artist_albums(&id)
-        .await
+    let (artist, albums) = tokio::try_join!(tidal.get_artist(&id), tidal.get_artist_albums(&id))
         .map_err(map_tidal_error)?;
-    Ok(Json(albums.into_iter().map(Into::into).collect()))
+    Ok(Json(dto::TidalArtistAlbums {
+        artist: artist.into(),
+        albums: albums.into_iter().map(Into::into).collect(),
+    }))
 }

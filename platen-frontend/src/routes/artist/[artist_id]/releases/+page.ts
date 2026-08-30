@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import { API_URL } from '$lib/constants';
 import type { Artist } from '$lib/dto/Artist';
-import type { TidalAlbum } from '$lib/dto/TidalAlbum';
+import type { TidalArtistAlbums } from '$lib/dto/TidalArtistAlbums';
 import type { PageLoad } from './$types';
 
 export const load: PageLoad = async ({ fetch, params }) => {
@@ -12,8 +12,9 @@ export const load: PageLoad = async ({ fetch, params }) => {
 	if (!artistResponse.ok) throw error(artistResponse.status, 'Artist not found');
 	if (!albumsResponse.ok) throw error(albumsResponse.status, 'Could not load releases');
 
+	const tidalArtist = (await albumsResponse.json()) as TidalArtistAlbums;
 	return {
 		artist: (await artistResponse.json()) as Artist,
-		albums: (await albumsResponse.json()) as TidalAlbum[]
+		albums: tidalArtist.albums
 	};
 };

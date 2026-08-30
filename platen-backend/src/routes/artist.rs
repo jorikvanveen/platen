@@ -17,6 +17,7 @@ pub mod dto {
     pub struct Artist {
         pub id: String,
         pub name: String,
+        pub profile_image_url: Option<String>,
     }
 }
 
@@ -25,6 +26,7 @@ impl From<artist::Model> for dto::Artist {
         dto::Artist {
             id: model.id,
             name: model.name,
+            profile_image_url: model.profile_image_url,
         }
     }
 }

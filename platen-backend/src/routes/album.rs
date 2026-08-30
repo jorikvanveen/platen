@@ -328,6 +328,7 @@ mod tests {
         artist::ActiveModel {
             id: Set("artist-1".into()),
             name: Set("Test artist".into()),
+            ..Default::default()
         }
         .insert(db)
         .await
@@ -427,6 +428,7 @@ mod tests {
             artist::ActiveModel {
                 id: Set(id.into()),
                 name: Set(name.into()),
+                ..Default::default()
             }
             .insert(&db)
             .await
@@ -526,6 +528,7 @@ mod tests {
         artist::ActiveModel {
             id: Set("artist-2".into()),
             name: Set("Secondary artist".into()),
+            ..Default::default()
         }
         .insert(&db)
         .await

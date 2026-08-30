@@ -155,7 +155,7 @@ impl Tidal {
     ) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
         let release_query = urlencoding::encode(query);
         let url = format!(
-            "{TIDAL_BASE_URL}/searchResults?filter[query]={release_query}&include=albums.artists,albums.coverArt"
+            "{TIDAL_BASE_URL}/searchResults?filter[query]={release_query}&include=albums.artists,albums.artists.profileArt,albums.coverArt"
         );
 
         let resp = self.send_with_retry(self.client.get(url)).await?;
@@ -194,10 +194,7 @@ impl Tidal {
                                 .iter()
                                 .map(|artist| artist.id.clone())
                                 .collect::<Vec<_>>(),
-                            select_cover_url(
-                                relationships.cover_art.as_ref(),
-                                &artworks,
-                            ),
+                            select_artwork_url(relationships.cover_art.as_ref(), &artworks),
                         )),
                         _ => None,
                     })
@@ -207,12 +204,18 @@ impl Tidal {
                     .included
                     .iter()
                     .filter_map(|included| match included {
-                        AlbumSearchIncluded::Artist { id, attributes }
-                            if artist_ids.iter().any(|artist_id| artist_id == id) =>
-                        {
+                        AlbumSearchIncluded::Artist {
+                            id,
+                            attributes,
+                            relationships,
+                        } if artist_ids.iter().any(|artist_id| artist_id == id) => {
                             Some(TidalArtist {
                                 id: id.clone(),
                                 name: attributes.name.clone(),
+                                profile_image_url: select_profile_image_url(
+                                    relationships.as_ref(),
+                                    &artworks,
+                                ),
                             })
                         }
                         _ => None,
@@ -253,7 +256,7 @@ impl Tidal {
         let doc: AlbumSingleResource = resp.json().await?;
         let resource = doc.data.ok_or(TidalError::UnexpectedResponse)?;
         let artworks: Vec<_> = artwork_resources(&doc.included).collect();
-        Ok(select_cover_url(
+        Ok(select_artwork_url(
             resource
                 .relationships
                 .as_ref()
@@ -299,10 +302,7 @@ impl Tidal {
                 else {
                     continue;
                 };
-                let cover_url = select_cover_url(
-                    relationships.cover_art.as_ref(),
-                    &artworks,
-                );
+                let cover_url = select_artwork_url(relationships.cover_art.as_ref(), &artworks);
                 albums.push(TidalAlbum::from(id.clone(), attributes.clone(), cover_url));
             }
 
@@ -322,7 +322,7 @@ impl Tidal {
     }
 
     pub async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
-        let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=artists");
+        let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=artists,artists.profileArt");
         let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
@@ -336,6 +336,7 @@ impl Tidal {
             .relationships
             .and_then(|r| r.artists)
             .ok_or(TidalError::UnexpectedResponse)?;
+        let artworks: Vec<_> = artwork_resources(&doc.included).collect();
 
         relationships
             .data
@@ -343,19 +344,52 @@ impl Tidal {
             .map(|rel| {
                 doc.included
                     .iter()
-                    .find(|inc| inc.id == rel.id)
-                    .ok_or(TidalError::UnexpectedResponse)
-                    .map(|inc| TidalArtist {
-                        id: inc.id.clone(),
-                        name: inc.attributes.name.clone(),
+                    .find_map(|inc| match inc {
+                        AlbumSearchIncluded::Artist {
+                            id,
+                            attributes,
+                            relationships,
+                        } if id == &rel.id => Some(TidalArtist {
+                            id: id.clone(),
+                            name: attributes.name.clone(),
+                            profile_image_url: select_profile_image_url(
+                                relationships.as_ref(),
+                                &artworks,
+                            ),
+                        }),
+                        _ => None,
                     })
+                    .ok_or(TidalError::UnexpectedResponse)
             })
             .collect()
     }
 
+    pub async fn get_artist(&self, id: &str) -> Result<TidalArtist, TidalError> {
+        let url = format!("{TIDAL_BASE_URL}/artists/{id}?include=profileArt");
+        let resp = self.send_with_retry(self.client.get(url)).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let doc: tidal_response::ArtistSingleResource = resp.json().await?;
+        let resource = doc.data.ok_or(TidalError::UnexpectedResponse)?;
+        let artworks: Vec<_> = artwork_resources(&doc.included).collect();
+        let profile_image_url =
+            select_profile_image_url(resource.relationships.as_ref(), &artworks);
+
+        Ok(TidalArtist {
+            id: resource.id,
+            name: resource.attributes.name,
+            profile_image_url,
+        })
+    }
+
     pub async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let encoded = urlencoding::encode(query);
-        let url = format!("{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists");
+        let url = format!(
+            "{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists,artists.profileArt"
+        );
 
         let resp = self.send_with_retry(self.client.get(url)).await?;
         if !resp.status().is_success() {
@@ -365,6 +399,7 @@ impl Tidal {
 
         let doc: ArtistSearchDocument = resp.json().await?;
         let search = doc.data.first().ok_or(TidalError::UnexpectedResponse)?;
+        let artworks: Vec<_> = artwork_resources(&doc.included).collect();
 
         let relationships = search
             .relationships
@@ -376,14 +411,23 @@ impl Tidal {
             .data
             .iter()
             .map(|rel| {
-                doc.included
+                let (id, attributes, relationships) = doc
+                    .included
                     .iter()
-                    .find(|inc| inc.id == rel.id)
-                    .ok_or(TidalError::UnexpectedResponse)
-                    .map(|inc| TidalArtist {
-                        id: inc.id.clone(),
-                        name: inc.attributes.name.clone(),
+                    .find_map(|included| match included {
+                        AlbumSearchIncluded::Artist {
+                            id,
+                            attributes,
+                            relationships,
+                        } if id == &rel.id => Some((id, attributes, relationships)),
+                        _ => None,
                     })
+                    .ok_or(TidalError::UnexpectedResponse)?;
+                Ok(TidalArtist {
+                    id: id.clone(),
+                    name: attributes.name.clone(),
+                    profile_image_url: select_profile_image_url(relationships.as_ref(), &artworks),
+                })
             })
             .collect()
     }
@@ -398,7 +442,17 @@ fn artwork_resources<'a>(
     })
 }
 
-fn select_cover_url(
+fn select_profile_image_url(
+    relationships: Option<&tidal_response::ArtistIncludedRelationships>,
+    artworks: &[&tidal_response::ArtworkResource],
+) -> Option<String> {
+    select_artwork_url(
+        relationships.and_then(|relationships| relationships.profile_art.as_ref()),
+        artworks,
+    )
+}
+
+fn select_artwork_url(
     relationship: Option<&tidal_response::ArtworkRelationship>,
     artworks: &[&tidal_response::ArtworkResource],
 ) -> Option<String> {
@@ -466,6 +520,7 @@ fn is_valid_https_url(value: &str) -> bool {
 pub struct TidalArtist {
     pub id: String,
     pub name: String,
+    pub profile_image_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -617,6 +672,8 @@ mod tidal_response {
         Artist {
             id: String,
             attributes: ArtistIncludedAttributes,
+            #[serde(default)]
+            relationships: Option<ArtistIncludedRelationships>,
         },
         #[serde(rename = "artworks")]
         Artwork {
@@ -708,6 +765,21 @@ mod tidal_response {
         pub id: String,
         pub r#type: String,
         pub attributes: ArtistIncludedAttributes,
+        #[serde(default)]
+        pub relationships: Option<ArtistIncludedRelationships>,
+    }
+
+    #[derive(Debug, Deserialize, Default)]
+    pub struct ArtistIncludedRelationships {
+        #[serde(default, rename = "profileArt")]
+        pub profile_art: Option<ArtworkRelationship>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ArtistSingleResource {
+        pub data: Option<ArtistResource>,
+        #[serde(default)]
+        pub included: Vec<AlbumSearchIncluded>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -748,7 +820,7 @@ mod tidal_response {
     pub struct AlbumWithArtistsDocument {
         pub data: Option<AlbumWithArtistsResource>,
         #[serde(default)]
-        pub included: Vec<ArtistIncluded>,
+        pub included: Vec<AlbumSearchIncluded>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -769,7 +841,7 @@ mod tidal_response {
     pub struct ArtistSearchDocument {
         pub data: Vec<ArtistSearchData>,
         #[serde(default)]
-        pub included: Vec<ArtistIncluded>,
+        pub included: Vec<AlbumSearchIncluded>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -785,14 +857,6 @@ mod tidal_response {
         pub artists: Option<AlbumSearchRelationshipsAlbums>,
     }
 
-    #[derive(Debug, Deserialize)]
-    #[allow(dead_code)]
-    pub struct ArtistIncluded {
-        pub id: String,
-        pub r#type: String,
-        pub attributes: ArtistIncludedAttributes,
-    }
-
     #[derive(Debug, Deserialize, Clone)]
     #[serde(rename_all = "camelCase")]
     pub struct ArtistIncludedAttributes {
@@ -803,10 +867,11 @@ mod tidal_response {
 #[cfg(test)]
 mod tests {
     use super::tidal_response::{
-        AlbumSearchIncluded, AlbumSearchIncludedAttributes, ArtistAlbumsRelationshipDocument,
-        ArtworkRelationship, ArtworkRelationshipData, ArtworkResource,
+        AlbumSearchIncluded, AlbumSearchIncludedAttributes, AlbumWithArtistsDocument,
+        ArtistAlbumsRelationshipDocument, ArtistSingleResource, ArtworkRelationship,
+        ArtworkRelationshipData, ArtworkResource,
     };
-    use super::{artwork_resources, select_cover_url};
+    use super::{artwork_resources, select_artwork_url, select_profile_image_url};
 
     /// Regression: `#[serde(rename = "camelCase")]` renames the type, not the
     /// fields, so Tidal's `releaseDate` silently deserialized to `None`.
@@ -926,6 +991,105 @@ mod tests {
     }
 
     #[test]
+    fn deserializes_album_artists_with_profile_artwork() {
+        let doc: AlbumWithArtistsDocument = serde_json::from_value(serde_json::json!({
+            "data": {
+                "type": "albums",
+                "id": "album-1",
+                "attributes": {
+                    "title": "Duality",
+                    "duration": "PT30M",
+                    "explicit": false,
+                    "popularity": 0.0,
+                    "type": "ALBUM"
+                },
+                "relationships": {
+                    "artists": {
+                        "data": [{"id": "artist-1", "type": "artists"}]
+                    }
+                }
+            },
+            "included": [
+                {
+                    "type": "artists",
+                    "id": "artist-1",
+                    "attributes": {"name": "BLCKK"},
+                    "relationships": {
+                        "profileArt": {"data": [{"id": "portrait", "type": "artworks"}]}
+                    }
+                },
+                {
+                    "type": "artworks",
+                    "id": "portrait",
+                    "attributes": {
+                        "mediaType": "IMAGE",
+                        "files": [{
+                            "href": "https://cdn.example/portrait",
+                            "width": 640,
+                            "height": 640
+                        }]
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        let artworks: Vec<_> = artwork_resources(&doc.included).collect();
+        let AlbumSearchIncluded::Artist {
+            id,
+            attributes,
+            relationships,
+        } = doc
+            .included
+            .iter()
+            .find(|included| matches!(included, AlbumSearchIncluded::Artist { .. }))
+            .unwrap()
+        else {
+            panic!("expected an artist resource");
+        };
+
+        assert_eq!(id, "artist-1");
+        assert_eq!(attributes.name, "BLCKK");
+        assert_eq!(
+            select_profile_image_url(relationships.as_ref(), &artworks).as_deref(),
+            Some("https://cdn.example/portrait")
+        );
+    }
+
+    #[test]
+    fn selects_profile_image_from_artist_metadata() {
+        let doc: ArtistSingleResource = serde_json::from_value(serde_json::json!({
+            "data": {
+                "type": "artists",
+                "id": "artist-1",
+                "attributes": {"name": "BLCKK"},
+                "relationships": {
+                    "profileArt": {"data": [{"id": "portrait", "type": "artworks"}]}
+                }
+            },
+            "included": [{
+                "type": "artworks",
+                "id": "portrait",
+                "attributes": {
+                    "mediaType": "IMAGE",
+                    "files": [
+                        {"href": "https://cdn.example/portrait-large", "width": 1200, "height": 1200},
+                        {"href": "https://cdn.example/portrait", "width": 640, "height": 640}
+                    ]
+                }
+            }]
+        }))
+        .unwrap();
+        let artist = doc.data.unwrap();
+        let artworks: Vec<_> = artwork_resources(&doc.included).collect();
+
+        assert_eq!(
+            select_profile_image_url(artist.relationships.as_ref(), &artworks).as_deref(),
+            Some("https://cdn.example/portrait")
+        );
+    }
+
+    #[test]
     fn selects_the_first_image_resource_with_the_best_square_file() {
         let included: Vec<AlbumSearchIncluded> = serde_json::from_value(serde_json::json!([
             {
@@ -975,7 +1139,7 @@ mod tests {
         };
 
         let artworks: Vec<_> = artwork_resources(&included).collect();
-        let cover = select_cover_url(Some(&relationship), &artworks);
+        let cover = select_artwork_url(Some(&relationship), &artworks);
 
         assert_eq!(cover.as_deref(), Some("https://cdn.example/small"));
     }
@@ -1015,7 +1179,7 @@ mod tests {
 
         let artworks: Vec<_> = artwork_resources(&included).collect();
         assert_eq!(
-            select_cover_url(Some(&relationship), &artworks).as_deref(),
+            select_artwork_url(Some(&relationship), &artworks).as_deref(),
             Some("https://cdn.example/first")
         );
     }
@@ -1039,7 +1203,7 @@ mod tests {
         };
 
         let artworks = vec![&resource];
-        assert_eq!(select_cover_url(Some(&relationship), &artworks), None);
+        assert_eq!(select_artwork_url(Some(&relationship), &artworks), None);
     }
 
     #[test]
@@ -1062,7 +1226,7 @@ mod tests {
 
         let artworks = vec![&resource];
         assert_eq!(
-            select_cover_url(Some(&relationship), &artworks).as_deref(),
+            select_artwork_url(Some(&relationship), &artworks).as_deref(),
             Some("https://cdn.example/large")
         );
     }
