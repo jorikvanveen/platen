@@ -7,7 +7,7 @@ use tokio::{
     fs::{self, File},
     io::{self, AsyncWriteExt},
     process::Command,
-    time::sleep,
+    time::{sleep, timeout},
 };
 
 use color_eyre::Report;
@@ -17,6 +17,7 @@ use thiserror::Error;
 use crate::{entity::album, services::downloaders::Downloader};
 
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
+const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone)]
 pub struct Antra {
@@ -382,6 +383,9 @@ pub enum AntraError {
     #[error("Antra job failed with status: {0}")]
     JobFailed(String),
 
+    #[error("Antra job did not finish within 10 minutes")]
+    JobTimedOut,
+
     #[error("Could not unzip the downloaded archive")]
     UnzipFailed,
 
@@ -396,7 +400,6 @@ pub enum AntraError {
     #[error("The downloaded archive does not have the expected shape of one flat album directory")]
     UnexpectedArchiveShape,
 }
-
 #[async_trait::async_trait]
 impl Downloader for Antra {
     async fn download_album(
@@ -410,22 +413,27 @@ impl Downloader for Antra {
         let ResolveResponse { track_count, .. } = self.resolve(&url).await?;
         let CreateJobResponse { job_id, .. } = self.create_job(&url, track_count).await?;
 
-        loop {
-            sleep(Duration::from_millis(5000)).await;
-            let JobStatusResponse {
-                status: job_status, ..
-            } = self.job_status(&job_id).await?;
-            tracing::info!("Job status: {job_status}");
-            if job_status == "complete" {
-                break;
+        let poll_result = timeout(JOB_TIMEOUT, async {
+            loop {
+                sleep(Duration::from_secs(5)).await;
+                let JobStatusResponse {
+                    status: job_status, ..
+                } = self.job_status(&job_id).await?;
+                tracing::info!("Job status: {job_status}");
+                if job_status == "complete" {
+                    return Ok(());
+                }
+                if matches!(
+                    job_status.to_ascii_lowercase().as_str(),
+                    "failed" | "error" | "cancelled" | "canceled"
+                ) {
+                    return Err(AntraError::JobFailed(job_status));
+                }
             }
-            if matches!(
-                job_status.to_ascii_lowercase().as_str(),
-                "failed" | "error" | "cancelled" | "canceled"
-            ) {
-                return Err(Box::new(AntraError::JobFailed(job_status)));
-            }
-        }
+        })
+        .await
+        .map_err(|_| AntraError::JobTimedOut)?;
+        poll_result?;
 
         let download_path = self.job_download(&job_id).await?;
         let is_single = album
