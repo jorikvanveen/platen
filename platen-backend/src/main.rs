@@ -92,6 +92,10 @@ fn app_router(state: AppState) -> Router {
         )
         .route("/albums/{album_id}", post(routes::album::create))
         .route(
+            "/catalog/refresh-artwork",
+            post(routes::catalog::refresh_artwork),
+        )
+        .route(
             "/artists/{artist_id}/albums",
             get(routes::album::fetch_all_artist_albums),
         )
@@ -322,6 +326,49 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn catalog_artwork_refresh_route_is_available_via_post() {
+        let db = test_database().await;
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+        let app = app_router(app_state(db, queue));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/catalog/refresh-artwork")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "albums": {
+                    "updated": 0,
+                    "already_present": 0,
+                    "unavailable": 0,
+                    "failed": 0
+                },
+                "artists": {
+                    "updated": 0,
+                    "already_present": 0,
+                    "unavailable": 0,
+                    "failed": 0
+                }
+            })
+        );
+        worker_handle.abort();
+        let _ = worker_handle.await;
     }
 
     #[tokio::test]
