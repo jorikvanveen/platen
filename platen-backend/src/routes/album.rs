@@ -18,7 +18,7 @@ use crate::{
     AppState,
     entity::{self, album, album_artist, artist},
     routes::{artist::dto::Artist, download::dto::DownloadJob},
-    services::{catalog_utils, downloaders::Downloader},
+    services::{self, catalog_utils, downloaders::Downloader},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -672,12 +672,13 @@ pub async fn download(
     if album.as_ref().is_some_and(|album| album.downloaded) {
         return Err(StatusCode::CONFLICT);
     }
-    let release_name = album
-        .map(|album| album.title)
-        .unwrap_or_else(|| album_id.clone());
-    let job = queue.enqueue(album_id).await.map_err(|error| {
-        error!("Could not enqueue download job: {error:#?}");
-        StatusCode::SERVICE_UNAVAILABLE
+    let release_name = album.map(|album| album.title);
+    let job = queue.enqueue(album_id).await.map_err(|error| match error {
+        services::download_queue::QueueError::Full => StatusCode::TOO_MANY_REQUESTS,
+        services::download_queue::QueueError::WorkerStopped => {
+            error!("Could not enqueue download job: {error:#?}");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
     })?;
     Ok((
         StatusCode::ACCEPTED,

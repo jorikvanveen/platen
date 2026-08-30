@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use figment::{
     Figment,
@@ -101,6 +101,7 @@ fn app_router(state: AppState) -> Router {
         )
         .route("/albums/{album_id}/download", post(routes::album::download))
         .route("/downloads", get(routes::download::list))
+        .route("/downloads/{job_id}", delete(routes::download::cancel))
         .route("/tidal/search/artists", get(routes::tidal::search_artists))
         .route("/tidal/search/albums", get(routes::tidal::search_albums))
         .route("/tidal/artists/{id}", get(routes::tidal::get_artist_albums))
@@ -120,7 +121,7 @@ mod tests {
     use std::{
         path::Path,
         sync::{
-            Arc,
+            Arc, Mutex as StdMutex,
             atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
@@ -184,6 +185,7 @@ mod tests {
         release: Notify,
         active: AtomicUsize,
         max_active: AtomicUsize,
+        album_starts: StdMutex<Vec<String>>,
     }
 
     impl GateDownloader {
@@ -193,6 +195,7 @@ mod tests {
                 release: Notify::new(),
                 active: AtomicUsize::new(0),
                 max_active: AtomicUsize::new(0),
+                album_starts: StdMutex::new(Vec::new()),
             })
         }
 
@@ -218,9 +221,10 @@ mod tests {
     impl Downloader for GateDownloader {
         async fn download_album(
             &self,
-            _album: &album::Model,
+            album: &album::Model,
             _destination: &Path,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            self.album_starts.lock().unwrap().push(album.id.clone());
             self.record_start();
             self.release.notified().await;
             self.active.fetch_sub(1, Ordering::SeqCst);
@@ -417,6 +421,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_active_submission_returns_existing_job_without_reordering() {
+        let db = test_database().await;
+        for album_id in ["album-1", "album-2", "album-3"] {
+            insert_test_album(&db, album_id).await;
+        }
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+        let app = app_router(app_state(db, queue));
+
+        enqueue(&app, "album-1").await;
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        let first_queued = enqueue(&app, "album-2").await;
+        enqueue(&app, "album-3").await;
+        let duplicate = enqueue(&app, "album-2").await;
+
+        assert_eq!(duplicate["id"], first_queued["id"]);
+        assert_eq!(duplicate["status"], "queued");
+        let body = downloads(&app).await;
+        let active = body["active"].as_array().unwrap();
+        assert_eq!(active[0]["album_id"], "album-1");
+        assert_eq!(active[1]["album_id"], "album-2");
+        assert_eq!(active[2]["album_id"], "album-3");
+
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn queue_accepts_one_thousand_waiting_jobs_and_rejects_the_next() {
+        let db = test_database().await;
+        insert_test_album(&db, "album-running").await;
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+        let app = app_router(app_state(db, queue.clone()));
+
+        enqueue(&app, "album-running").await;
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        let first_queued = enqueue(&app, "album-queued-0").await;
+        for index in 1..1_000 {
+            enqueue(&app, &format!("album-queued-{index}")).await;
+        }
+
+        let duplicate = enqueue(&app, "album-queued-0").await;
+        assert_eq!(duplicate["id"], first_queued["id"]);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/albums/album-over-limit/download")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(queue.active().await.len(), 1_001);
+        assert!(
+            !queue
+                .active()
+                .await
+                .iter()
+                .any(|job| job.album_id == "album-over-limit")
+        );
+
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
     async fn one_worker_does_not_run_downloads_concurrently() {
         let db = test_database().await;
         insert_test_album(&db, "album-1").await;
@@ -444,12 +524,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(downloader.active.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            downloader.album_starts.lock().unwrap().as_slice(),
+            ["album-1"]
+        );
+        let body = downloads(&app).await;
+        assert_eq!(body["active"][0]["album_id"], "album-1");
+        assert_eq!(body["active"][0]["status"], "running");
+        assert_eq!(body["active"][1]["album_id"], "album-2");
+        assert_eq!(body["active"][1]["status"], "queued");
 
         downloader.release.notify_one();
         tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
             .await
             .unwrap();
         assert_eq!(downloader.max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            downloader.album_starts.lock().unwrap().as_slice(),
+            ["album-1", "album-2"]
+        );
 
         downloader.release.notify_one();
         worker_handle.abort();
@@ -500,28 +593,71 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_download_enters_history_and_can_be_enqueued_again() {
+    async fn delete_cancels_queued_job_and_rejects_running_or_unknown_jobs() {
         let db = test_database().await;
         insert_test_album(&db, "album-1").await;
         insert_test_album(&db, "album-2").await;
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
             DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
-        let app = app_router(app_state(db, queue.clone()));
+        let app = app_router(app_state(db, queue));
 
-        enqueue(&app, "album-1").await;
+        let running = enqueue(&app, "album-1").await;
         tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
             .await
             .unwrap();
         let queued = enqueue(&app, "album-2").await;
-        assert!(queue.cancel(queued["id"].as_str().unwrap()).await);
 
-        let body = wait_for_history(&app, 1).await;
-        assert_eq!(body["history"][0]["album_id"], "album-2");
-        assert_eq!(body["history"][0]["status"], "cancelled");
-        assert!(body["history"][0]["started_at"].is_null());
-        assert!(body["history"][0]["finished_at"].is_string());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/downloads/{}", queued["id"].as_str().unwrap()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        let cancelled: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(cancelled["id"], queued["id"]);
+        assert_eq!(cancelled["album_id"], "album-2");
+        assert_eq!(cancelled["release_name"], "Album album-2");
+        assert_eq!(cancelled["status"], "cancelled");
+        assert!(cancelled["started_at"].is_null());
+        assert!(cancelled["finished_at"].is_string());
 
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/downloads/{}", running["id"].as_str().unwrap()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert_eq!(downloader.active.load(Ordering::SeqCst), 1);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/downloads/not-a-job")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
+
+        let history = downloads(&app).await;
+        assert_eq!(history["history"][0]["status"], "cancelled");
         let retried = enqueue(&app, "album-2").await;
         assert_eq!(retried["status"], "queued");
 

@@ -3,6 +3,7 @@
 	import DownloadJobTable from "$lib/components/DownloadJobTable.svelte";
 	import PageHeading from "$lib/components/PageHeading.svelte";
 	import { API_URL } from "$lib/constants";
+	import type { DownloadJob } from "$lib/dto/DownloadJob";
 	import type { Downloads } from "$lib/dto/Downloads";
 	import type { PageProps } from "./$types";
 
@@ -14,6 +15,14 @@
 		const response = await fetch(`${API_URL}/downloads`);
 		if (response.ok) {
 			downloads = (await response.json()) as Downloads;
+		}
+	}
+
+	async function cancel(job: DownloadJob) {
+		const response = await fetch(`${API_URL}/downloads/${job.id}`, { method: "DELETE" });
+		await refresh();
+		if (!response.ok) {
+			throw new Error(`Could not cancel download: ${response.status}`);
 		}
 	}
 
@@ -30,6 +39,7 @@
 		title="Active downloads"
 		jobs={downloads.active}
 		emptyMessage="No active downloads."
+		onCancel={cancel}
 	/>
 
 	<DownloadJobTable

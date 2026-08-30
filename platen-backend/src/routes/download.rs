@@ -1,9 +1,12 @@
 use crate::{
     AppState,
     entity::album,
-    services::download_queue::{JobRecord, JobStatus},
+    services::download_queue::{CancelError, JobRecord, JobStatus},
 };
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
 use reqwest::StatusCode;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
@@ -28,7 +31,7 @@ pub mod dto {
     pub struct DownloadJob {
         pub id: String,
         pub album_id: String,
-        pub release_name: String,
+        pub release_name: Option<String>,
         pub status: DownloadJobStatus,
         pub enqueued_at: DateTime<Utc>,
         pub started_at: Option<DateTime<Utc>>,
@@ -45,7 +48,7 @@ pub mod dto {
 }
 
 impl dto::DownloadJob {
-    pub(crate) fn from_record(job: JobRecord, release_name: String) -> Self {
+    pub(crate) fn from_record(job: JobRecord, release_name: Option<String>) -> Self {
         Self {
             id: job.id,
             album_id: job.album_id,
@@ -71,6 +74,25 @@ impl From<JobStatus> for dto::DownloadJobStatus {
     }
 }
 
+pub async fn cancel(
+    State(AppState { db, queue, .. }): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<dto::DownloadJob>, StatusCode> {
+    let job = queue.cancel(&job_id).await.map_err(|error| match error {
+        CancelError::NotFound => StatusCode::NOT_FOUND,
+        CancelError::Running => StatusCode::CONFLICT,
+    })?;
+    let release_name = match album::Entity::find_by_id(&job.album_id).one(&db).await {
+        Ok(album) => album.map(|album| album.title),
+        Err(error) => {
+            tracing::error!("Could not load album for cancelled download: {error:#?}");
+            None
+        }
+    };
+
+    Ok(Json(dto::DownloadJob::from_record(job, release_name)))
+}
+
 pub async fn list(
     State(AppState { db, queue, .. }): State<AppState>,
 ) -> Result<Json<dto::Downloads>, StatusCode> {
@@ -94,10 +116,7 @@ pub async fn list(
         .collect::<std::collections::HashMap<_, _>>();
 
     let map_job = |job: JobRecord| {
-        let release_name = titles
-            .get(&job.album_id)
-            .cloned()
-            .unwrap_or_else(|| job.album_id.clone());
+        let release_name = titles.get(&job.album_id).cloned();
         dto::DownloadJob::from_record(job, release_name)
     };
 

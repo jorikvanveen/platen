@@ -30,8 +30,18 @@ pub struct JobRecord {
 
 #[derive(Debug, Error)]
 pub enum QueueError {
+    #[error("download queue is full")]
+    Full,
     #[error("download worker is not running")]
     WorkerStopped,
+}
+
+#[derive(Debug, Error)]
+pub enum CancelError {
+    #[error("download job was not found")]
+    NotFound,
+    #[error("download job is already running")]
+    Running,
 }
 
 #[derive(Clone)]
@@ -40,7 +50,8 @@ pub struct DownloadQueue {
     sender: mpsc::UnboundedSender<String>,
 }
 
-const HISTORY_LIMIT: usize = 100;
+const HISTORY_LIMIT: usize = 1000;
+const QUEUED_JOB_LIMIT: usize = 1_000;
 
 struct QueueState {
     active: Vec<JobRecord>,
@@ -48,13 +59,19 @@ struct QueueState {
 }
 
 impl QueueState {
-    fn finish(&mut self, index: usize, status: JobStatus, failure_reason: Option<String>) {
+    fn finish(
+        &mut self,
+        index: usize,
+        status: JobStatus,
+        failure_reason: Option<String>,
+    ) -> JobRecord {
         let mut job = self.active.remove(index);
         job.status = status;
         job.finished_at = Some(Utc::now());
         job.failure_reason = failure_reason;
-        self.history.push_front(job);
+        self.history.push_front(job.clone());
         self.history.truncate(HISTORY_LIMIT);
+        job
     }
 }
 
@@ -95,6 +112,15 @@ impl DownloadQueue {
         if let Some(existing) = state.active.iter().find(|job| job.album_id == album_id) {
             return Ok(existing.clone());
         }
+        if state
+            .active
+            .iter()
+            .filter(|job| job.status == JobStatus::Queued)
+            .count()
+            >= QUEUED_JOB_LIMIT
+        {
+            return Err(QueueError::Full);
+        }
 
         let record = JobRecord {
             id: nanoid!(),
@@ -127,18 +153,15 @@ impl DownloadQueue {
         )
     }
 
-    #[allow(dead_code)]
-    pub async fn cancel(&self, id: &str) -> bool {
+    pub async fn cancel(&self, id: &str) -> Result<JobRecord, CancelError> {
         let mut state = self.state.lock().await;
-        let Some(index) = state
-            .active
-            .iter()
-            .position(|job| job.id == id && job.status == JobStatus::Queued)
-        else {
-            return false;
+        let Some(index) = state.active.iter().position(|job| job.id == id) else {
+            return Err(CancelError::NotFound);
         };
-        state.finish(index, JobStatus::Cancelled, None);
-        true
+        if state.active[index].status == JobStatus::Running {
+            return Err(CancelError::Running);
+        }
+        Ok(state.finish(index, JobStatus::Cancelled, None))
     }
 
     async fn mark_running(&self, id: &str) -> Option<JobRecord> {
