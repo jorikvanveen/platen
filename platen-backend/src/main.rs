@@ -126,7 +126,7 @@ mod tests {
         time::Duration,
     };
 
-    use axum::{body::Body, body::to_bytes, http::Request};
+    use axum::{Router, body::Body, body::to_bytes, http::Request};
     use migration::MigratorTrait;
     use sea_orm::{ActiveModelTrait, Database, Set};
     use tokio::sync::Notify;
@@ -137,6 +137,47 @@ mod tests {
         entity::{album, album_artist, artist},
         services::downloaders::Downloader,
     };
+
+    struct FailFirstDownloader {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Downloader for FailFirstDownloader {
+        async fn download_album(
+            &self,
+            _album: &album::Model,
+            _destination: &Path,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(std::io::Error::other(
+                    "remote response exposed credential=secret and /private/music/path",
+                )
+                .into());
+            }
+            Ok(())
+        }
+    }
+
+    struct GateLastDownloader {
+        started: Notify,
+        release: Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl Downloader for GateLastDownloader {
+        async fn download_album(
+            &self,
+            album: &album::Model,
+            _destination: &Path,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            if album.id == "album-active" {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok(())
+        }
+    }
 
     struct GateDownloader {
         started: Notify,
@@ -231,6 +272,53 @@ mod tests {
         }
     }
 
+    async fn enqueue(app: &Router, album_id: &str) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/albums/{album_id}/download"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn downloads(app: &Router) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/downloads")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn wait_for_history(app: &Router, expected: usize) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let body = downloads(app).await;
+                if body["history"].as_array().unwrap().len() == expected {
+                    return body;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
     #[tokio::test]
     async fn enqueue_rejects_when_worker_stopped_without_retaining_job() {
         let db = test_database().await;
@@ -258,6 +346,7 @@ mod tests {
         let app = app_router(app_state(db, queue));
 
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -275,11 +364,19 @@ mod tests {
         assert_eq!(job["album_id"], "album-1");
         assert_eq!(job["release_name"], "Album album-1");
         assert_eq!(job["status"], "queued");
+        chrono::DateTime::parse_from_rfc3339(job["enqueued_at"].as_str().unwrap()).unwrap();
+        assert!(job["started_at"].is_null());
+        assert!(job["finished_at"].is_null());
 
         tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
             .await
             .unwrap();
         assert_eq!(downloader.active.load(Ordering::SeqCst), 1);
+        let body = downloads(&app).await;
+        assert_eq!(body["active"][0]["status"], "running");
+        chrono::DateTime::parse_from_rfc3339(body["active"][0]["started_at"].as_str().unwrap())
+            .unwrap();
+        assert!(body["active"][0]["finished_at"].is_null());
         downloader.release.notify_one();
         worker_handle.abort();
         let _ = worker_handle.await;
@@ -353,6 +450,120 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(downloader.max_active.load(Ordering::SeqCst), 1);
+
+        downloader.release.notify_one();
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn failed_download_is_safe_and_does_not_stall_later_work() {
+        let db = test_database().await;
+        insert_test_album(&db, "album-1").await;
+        insert_test_album(&db, "album-2").await;
+        let downloader = Arc::new(FailFirstDownloader {
+            calls: AtomicUsize::new(0),
+        });
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+        let app = app_router(app_state(db, queue));
+
+        enqueue(&app, "album-1").await;
+        enqueue(&app, "album-2").await;
+        let body = wait_for_history(&app, 2).await;
+
+        assert!(body["active"].as_array().unwrap().is_empty());
+        assert_eq!(body["history"][0]["album_id"], "album-2");
+        assert_eq!(body["history"][0]["status"], "succeeded");
+        assert_eq!(body["history"][1]["album_id"], "album-1");
+        assert_eq!(body["history"][1]["status"], "failed");
+        assert_eq!(
+            body["history"][1]["failure_reason"],
+            "Album download failed."
+        );
+        assert!(!body.to_string().contains("credential=secret"));
+        assert!(!body.to_string().contains("/private/music/path"));
+
+        for job in body["history"].as_array().unwrap() {
+            chrono::DateTime::parse_from_rfc3339(job["enqueued_at"].as_str().unwrap()).unwrap();
+            chrono::DateTime::parse_from_rfc3339(job["started_at"].as_str().unwrap()).unwrap();
+            chrono::DateTime::parse_from_rfc3339(job["finished_at"].as_str().unwrap()).unwrap();
+        }
+
+        enqueue(&app, "album-1").await;
+        let body = wait_for_history(&app, 3).await;
+        assert_eq!(body["history"][0]["album_id"], "album-1");
+        assert_eq!(body["history"][0]["status"], "succeeded");
+
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_download_enters_history_and_can_be_enqueued_again() {
+        let db = test_database().await;
+        insert_test_album(&db, "album-1").await;
+        insert_test_album(&db, "album-2").await;
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+        let app = app_router(app_state(db, queue.clone()));
+
+        enqueue(&app, "album-1").await;
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        let queued = enqueue(&app, "album-2").await;
+        assert!(queue.cancel(queued["id"].as_str().unwrap()).await);
+
+        let body = wait_for_history(&app, 1).await;
+        assert_eq!(body["history"][0]["album_id"], "album-2");
+        assert_eq!(body["history"][0]["status"], "cancelled");
+        assert!(body["history"][0]["started_at"].is_null());
+        assert!(body["history"][0]["finished_at"].is_string());
+
+        let retried = enqueue(&app, "album-2").await;
+        assert_eq!(retried["status"], "queued");
+
+        downloader.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        downloader.release.notify_one();
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn download_history_retains_latest_hundred_without_evicting_active_work() {
+        let db = test_database().await;
+        for index in 0..=100 {
+            insert_test_album(&db, &format!("album-{index}")).await;
+        }
+        insert_test_album(&db, "album-active").await;
+        let downloader = Arc::new(GateLastDownloader {
+            started: Notify::new(),
+            release: Notify::new(),
+        });
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+        let app = app_router(app_state(db, queue));
+
+        for index in 0..=100 {
+            enqueue(&app, &format!("album-{index}")).await;
+        }
+        enqueue(&app, "album-active").await;
+        tokio::time::timeout(Duration::from_secs(5), downloader.started.notified())
+            .await
+            .unwrap();
+        let body = downloads(&app).await;
+
+        assert_eq!(body["active"].as_array().unwrap().len(), 1);
+        assert_eq!(body["active"][0]["album_id"], "album-active");
+        assert_eq!(body["active"][0]["status"], "running");
+        assert_eq!(body["history"].as_array().unwrap().len(), 100);
+        assert_eq!(body["history"][0]["album_id"], "album-100");
+        assert_eq!(body["history"][99]["album_id"], "album-1");
 
         downloader.release.notify_one();
         worker_handle.abort();

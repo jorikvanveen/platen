@@ -258,12 +258,11 @@ mod tests {
     use std::path::Path;
 
     use migration::MigratorTrait;
-    use reqwest::StatusCode;
     use sea_orm::{ActiveModelTrait, Database, EntityTrait, Set};
     use thiserror::Error;
 
     use super::{
-        ReleaseDate, credited_artists, download_with, parse_release_date,
+        DownloadError, ReleaseDate, credited_artists, download_with, parse_release_date,
         sanitize_filename_component,
     };
     use crate::{
@@ -483,7 +482,7 @@ mod tests {
 
         assert_eq!(
             download_with(&db, "/tmp/music", &downloader, "album-1").await,
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err(DownloadError::Transfer)
         );
 
         let album = album::Entity::find_by_id("album-1")
@@ -502,7 +501,7 @@ mod tests {
 
         assert_eq!(
             download_with(&db, "/tmp/music", &downloader, "album-1").await,
-            Err(StatusCode::CONFLICT)
+            Err(DownloadError::AlreadyDownloaded)
         );
     }
 
@@ -534,7 +533,7 @@ mod tests {
 
         assert_eq!(
             download_with(&db, "/tmp/music", &downloader, "album-1").await,
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
+            Err(DownloadError::Catalog)
         );
     }
 }
@@ -672,13 +671,31 @@ pub async fn download(
     })?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(DownloadJob {
-            id: job.id.to_string(),
-            album_id: job.album_id,
-            release_name,
-            status: job.status.into(),
-        }),
+        Json(DownloadJob::from_record(job, release_name)),
     ))
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum DownloadError {
+    #[error("could not load album metadata")]
+    Catalog,
+    #[error("album is already downloaded")]
+    AlreadyDownloaded,
+    #[error("album transfer failed")]
+    Transfer,
+    #[error("could not save completed download")]
+    Save,
+}
+
+impl DownloadError {
+    pub(crate) fn client_message(&self) -> &'static str {
+        match self {
+            Self::Catalog => "Could not load album metadata.",
+            Self::AlreadyDownloaded => "Album is already downloaded.",
+            Self::Transfer => "Album download failed.",
+            Self::Save => "Could not save the completed download.",
+        }
+    }
 }
 
 pub(crate) async fn download_with(
@@ -686,18 +703,21 @@ pub(crate) async fn download_with(
     music_dir: &str,
     downloader: &dyn Downloader,
     album_id: &str,
-) -> Result<(), StatusCode> {
+) -> Result<(), DownloadError> {
     let album = album::Entity::find_by_id(album_id)
         .one(db)
         .await
         .map_err(|e| {
-            error!("Db error: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            error!("Db error loading Album for download: {e:#?}");
+            DownloadError::Catalog
         })?
-        .ok_or(StatusCode::NOT_FOUND)?;
+        .ok_or_else(|| {
+            error!("Album {album_id} no longer exists when its Download job started");
+            DownloadError::Catalog
+        })?;
 
     if album.downloaded {
-        return Err(StatusCode::CONFLICT);
+        return Err(DownloadError::AlreadyDownloaded);
     }
 
     let (_, primary) = album_artist::Entity::find()
@@ -708,10 +728,16 @@ pub(crate) async fn download_with(
         .await
         .map_err(|e| {
             error!("Db error loading Primary artist: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            DownloadError::Catalog
         })?
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
-    let primary = primary.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
+        .ok_or_else(|| {
+            error!("Album {album_id} has no Primary artist relation");
+            DownloadError::Catalog
+        })?;
+    let primary = primary.ok_or_else(|| {
+        error!("Album {album_id} references a missing Primary artist");
+        DownloadError::Catalog
+    })?;
 
     // The library layout is derived from the catalog for every release type,
     // never from the archive's own structure (ADR 0003). A release year of 0
@@ -735,14 +761,14 @@ pub(crate) async fn download_with(
         .await
         .map_err(|e| {
             error!("Download failed: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+            DownloadError::Transfer
         })?;
 
     let mut active: album::ActiveModel = album.into();
     active.downloaded = Set(true);
     active.update(db).await.map_err(|e| {
         error!("Db error marking album as downloaded: {e:#?}");
-        StatusCode::INTERNAL_SERVER_ERROR
+        DownloadError::Save
     })?;
 
     Ok(())

@@ -1,9 +1,14 @@
-use crate::{AppState, entity::album, services::download_queue::JobStatus};
+use crate::{
+    AppState,
+    entity::album,
+    services::download_queue::{JobRecord, JobStatus},
+};
 use axum::{Json, extract::State};
 use reqwest::StatusCode;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 pub mod dto {
+    use chrono::{DateTime, Utc};
     use serde::Serialize;
     use ts_rs::TS;
 
@@ -25,6 +30,32 @@ pub mod dto {
         pub album_id: String,
         pub release_name: String,
         pub status: DownloadJobStatus,
+        pub enqueued_at: DateTime<Utc>,
+        pub started_at: Option<DateTime<Utc>>,
+        pub finished_at: Option<DateTime<Utc>>,
+        pub failure_reason: Option<String>,
+    }
+
+    #[derive(Debug, Serialize, TS)]
+    #[ts(export)]
+    pub struct Downloads {
+        pub active: Vec<DownloadJob>,
+        pub history: Vec<DownloadJob>,
+    }
+}
+
+impl dto::DownloadJob {
+    pub(crate) fn from_record(job: JobRecord, release_name: String) -> Self {
+        Self {
+            id: job.id,
+            album_id: job.album_id,
+            release_name,
+            status: job.status.into(),
+            enqueued_at: job.enqueued_at,
+            started_at: job.started_at,
+            finished_at: job.finished_at,
+            failure_reason: job.failure_reason,
+        }
     }
 }
 
@@ -42,13 +73,13 @@ impl From<JobStatus> for dto::DownloadJobStatus {
 
 pub async fn list(
     State(AppState { db, queue, .. }): State<AppState>,
-) -> Result<Json<Vec<dto::DownloadJob>>, StatusCode> {
-    let jobs = queue.active().await;
-    if jobs.is_empty() {
-        return Ok(Json(Vec::new()));
-    }
-
-    let album_ids: Vec<_> = jobs.iter().map(|job| job.album_id.clone()).collect();
+) -> Result<Json<dto::Downloads>, StatusCode> {
+    let (active, history) = queue.snapshot().await;
+    let album_ids: Vec<_> = active
+        .iter()
+        .chain(history.iter())
+        .map(|job| job.album_id.clone())
+        .collect();
     let albums = album::Entity::find()
         .filter(album::Column::Id.is_in(album_ids))
         .all(&db)
@@ -62,17 +93,16 @@ pub async fn list(
         .map(|album| (album.id, album.title))
         .collect::<std::collections::HashMap<_, _>>();
 
-    Ok(Json(
-        jobs.into_iter()
-            .map(|job| dto::DownloadJob {
-                id: job.id.to_string(),
-                release_name: titles
-                    .get(&job.album_id)
-                    .cloned()
-                    .unwrap_or_else(|| job.album_id.clone()),
-                album_id: job.album_id,
-                status: job.status.into(),
-            })
-            .collect(),
-    ))
+    let map_job = |job: JobRecord| {
+        let release_name = titles
+            .get(&job.album_id)
+            .cloned()
+            .unwrap_or_else(|| job.album_id.clone());
+        dto::DownloadJob::from_record(job, release_name)
+    };
+
+    Ok(Json(dto::Downloads {
+        active: active.into_iter().map(&map_job).collect(),
+        history: history.into_iter().map(map_job).collect(),
+    }))
 }
