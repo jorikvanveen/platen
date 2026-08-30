@@ -18,6 +18,50 @@ use crate::{entity::album, services::downloaders::Downloader};
 
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
 const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DOWNLOAD_PROGRESS_PERCENT_INTERVAL: u64 = 5;
+
+struct DownloadProgress {
+    total_bytes: Option<u64>,
+    downloaded_bytes: u64,
+    last_reported_percentage: u64,
+}
+
+impl DownloadProgress {
+    fn new(total_bytes: Option<u64>) -> Self {
+        Self {
+            total_bytes: total_bytes.filter(|total| *total > 0),
+            downloaded_bytes: 0,
+            last_reported_percentage: 0,
+        }
+    }
+
+    fn advance(&mut self, chunk_size: usize) -> bool {
+        self.downloaded_bytes = self.downloaded_bytes.saturating_add(chunk_size as u64);
+
+        let Some(total_bytes) = self.total_bytes else {
+            return false;
+        };
+        let percentage = self.percentage().unwrap_or_default();
+        if percentage < self.last_reported_percentage + DOWNLOAD_PROGRESS_PERCENT_INTERVAL
+            && self.downloaded_bytes < total_bytes
+        {
+            return false;
+        }
+        self.last_reported_percentage = percentage;
+
+        true
+    }
+
+    fn percentage(&self) -> Option<u64> {
+        self.total_bytes.map(|total_bytes| {
+            self.downloaded_bytes
+                .saturating_mul(100)
+                .checked_div(total_bytes)
+                .unwrap_or(0)
+                .min(100)
+        })
+    }
+}
 
 #[derive(Clone)]
 pub struct Antra {
@@ -169,10 +213,16 @@ impl Antra {
 
         let tmp = std::env::temp_dir();
         fs::create_dir_all(&tmp).await?;
-        let download_path = tmp.join(filename);
+        let download_path = tmp.join(&filename);
         let mut file = File::create(&download_path).await?;
+        let mut progress = DownloadProgress::new(resp.content_length());
 
-        tracing::info!("Starting download");
+        tracing::info!(
+            job_id,
+            filename,
+            total_bytes = progress.total_bytes,
+            "Starting Antra download"
+        );
         loop {
             let chunk = match resp.chunk().await? {
                 Some(c) => c,
@@ -180,8 +230,24 @@ impl Antra {
             };
 
             file.write_all(&chunk).await?;
+            if progress.advance(chunk.len()) {
+                tracing::info!(
+                    job_id,
+                    filename,
+                    downloaded_bytes = progress.downloaded_bytes,
+                    total_bytes = progress.total_bytes,
+                    percentage = progress.percentage(),
+                    "Antra download progress"
+                );
+            }
         }
-        tracing::info!("Download finished");
+        tracing::info!(
+            job_id,
+            filename,
+            downloaded_bytes = progress.downloaded_bytes,
+            total_bytes = progress.total_bytes,
+            "Antra download finished"
+        );
         Ok(download_path)
     }
 
@@ -467,6 +533,35 @@ impl Downloader for Antra {
 mod tests {
     use super::*;
     use std::process::Command as SyncCommand;
+
+    #[test]
+    fn reports_download_progress_every_five_percent() {
+        let mut progress = DownloadProgress::new(Some(1_000));
+
+        assert!(!progress.advance(49));
+        assert!(progress.advance(1));
+        assert_eq!(progress.percentage(), Some(5));
+        assert!(!progress.advance(49));
+        assert!(progress.advance(1));
+        assert_eq!(progress.percentage(), Some(10));
+    }
+
+    #[test]
+    fn reports_completion_when_the_last_chunk_is_smaller_than_the_interval() {
+        let mut progress = DownloadProgress::new(Some(1_000));
+
+        assert!(progress.advance(960));
+        assert!(progress.advance(40));
+        assert_eq!(progress.percentage(), Some(100));
+    }
+
+    #[test]
+    fn does_not_report_progress_when_content_length_is_unknown() {
+        let mut progress = DownloadProgress::new(None);
+
+        assert!(!progress.advance(5 * 1024 * 1024));
+        assert_eq!(progress.percentage(), None);
+    }
 
     // Real zips, because placement extracts with the real unzip binary.
     fn build_archive(working_dir: &Path, archive: &Path, entries: &[&str]) {
