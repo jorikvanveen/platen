@@ -27,6 +27,7 @@ pub mod dto {
     pub struct TidalAlbum {
         pub id: String,
         pub title: String,
+        pub cover_url: Option<String>,
         pub album_type: String,
         pub release_date: Option<String>,
         pub popularity: f64,
@@ -37,6 +38,7 @@ pub mod dto {
     pub struct TidalAlbumSearchHit {
         pub id: String,
         pub title: String,
+        pub cover_url: Option<String>,
         pub album_type: String,
         pub release_date: Option<String>,
         pub popularity: f64,
@@ -58,6 +60,7 @@ impl From<services::tidal::TidalAlbum> for dto::TidalAlbum {
         dto::TidalAlbum {
             id: a.id,
             title: a.title,
+            cover_url: a.cover_url,
             album_type: a.r#type,
             release_date: a.release_date,
             popularity: a.popularity,
@@ -70,6 +73,7 @@ impl From<services::tidal::ResolvedTidalSearchedAlbum> for dto::TidalAlbumSearch
         dto::TidalAlbumSearchHit {
             id: a.id,
             title: a.title,
+            cover_url: a.cover_url,
             album_type: a.r#type,
             release_date: a.release_date,
             popularity: a.popularity,

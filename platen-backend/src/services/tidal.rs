@@ -4,6 +4,7 @@ use reqwest::{RequestBuilder, StatusCode};
 use std::{sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::{sync::Mutex, time::sleep};
+use url::Url;
 
 use tidal_response::{
     AlbumSearchIncluded, AlbumSearchIncludedAttributes, AlbumSearchRelationshipsAlbumsData,
@@ -154,7 +155,7 @@ impl Tidal {
     ) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
         let release_query = urlencoding::encode(query);
         let url = format!(
-            "{TIDAL_BASE_URL}/searchResults?filter[query]={release_query}&include=albums.artists"
+            "{TIDAL_BASE_URL}/searchResults?filter[query]={release_query}&include=albums.artists,albums.coverArt"
         );
 
         let resp = self.send_with_retry(self.client.get(url)).await?;
@@ -172,11 +173,12 @@ impl Tidal {
             .relationships
             .albums
             .data;
+        let artworks: Vec<_> = artwork_resources(&resp.included).collect();
 
         relationships
             .iter()
             .map(|relationship| {
-                let (album, artist_ids) = resp
+                let (album, artist_ids, cover_url) = resp
                     .included
                     .iter()
                     .find_map(|included| match included {
@@ -192,6 +194,10 @@ impl Tidal {
                                 .iter()
                                 .map(|artist| artist.id.clone())
                                 .collect::<Vec<_>>(),
+                            select_cover_url(
+                                relationships.cover_art.as_ref(),
+                                &artworks,
+                            ),
                         )),
                         _ => None,
                     })
@@ -217,6 +223,7 @@ impl Tidal {
                     relationship,
                     album,
                     artists,
+                    cover_url,
                 )))
             })
             .collect()
@@ -232,13 +239,34 @@ impl Tidal {
 
         let doc: AlbumSingleResource = resp.json().await?;
         let resource = doc.data.ok_or(TidalError::UnexpectedResponse)?;
-        Ok(TidalAlbum::from(resource.id, resource.attributes))
+        Ok(TidalAlbum::from(resource.id, resource.attributes, None))
+    }
+
+    pub async fn get_album_cover(&self, id: &str) -> Result<Option<String>, TidalError> {
+        let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=coverArt");
+        let resp = self.send_with_retry(self.client.get(url)).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let doc: AlbumSingleResource = resp.json().await?;
+        let resource = doc.data.ok_or(TidalError::UnexpectedResponse)?;
+        let artworks: Vec<_> = artwork_resources(&doc.included).collect();
+        Ok(select_cover_url(
+            resource
+                .relationships
+                .as_ref()
+                .and_then(|relationships| relationships.cover_art.as_ref()),
+            &artworks,
+        ))
     }
 
     /// Follows `links.next` cursor pages of
-    /// `GET /artists/{id}/relationships/albums?include=albums` until exhausted
-    /// or `MAX_PAGES` is hit. The plain `GET /artists/{id}?include=albums`
-    /// endpoint exposes no paging parameter and returns only the first page,
+    /// `GET /artists/{id}/relationships/albums?include=albums,albums.coverArt`
+    /// until exhausted or `MAX_PAGES` is hit. The plain
+    /// `GET /artists/{id}?include=albums` endpoint exposes no paging parameter
+    /// and returns only the first page,
     /// which is why this goes through the relationship endpoint instead.
     pub async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
         const MAX_PAGES: usize = 50;
@@ -249,7 +277,9 @@ impl Tidal {
             let url = match &next {
                 Some(rel) => format!("{TIDAL_BASE_URL}{rel}"),
                 None => {
-                    format!("{TIDAL_BASE_URL}/artists/{id}/relationships/albums?include=albums")
+                    format!(
+                        "{TIDAL_BASE_URL}/artists/{id}/relationships/albums?include=albums,albums.coverArt"
+                    )
                 }
             };
             let resp = self.send_with_retry(self.client.get(url)).await?;
@@ -259,8 +289,21 @@ impl Tidal {
             }
 
             let doc: ArtistAlbumsRelationshipDocument = resp.json().await?;
+            let artworks: Vec<_> = artwork_resources(&doc.included).collect();
             for inc in &doc.included {
-                albums.push(TidalAlbum::from(inc.id.clone(), inc.attributes.clone()));
+                let AlbumSearchIncluded::Album {
+                    id,
+                    attributes,
+                    relationships,
+                } = inc
+                else {
+                    continue;
+                };
+                let cover_url = select_cover_url(
+                    relationships.cover_art.as_ref(),
+                    &artworks,
+                );
+                albums.push(TidalAlbum::from(id.clone(), attributes.clone(), cover_url));
             }
 
             next = doc.links.and_then(|l| l.next);
@@ -346,6 +389,79 @@ impl Tidal {
     }
 }
 
+fn artwork_resources<'a>(
+    included: &'a [tidal_response::AlbumSearchIncluded],
+) -> impl Iterator<Item = &'a tidal_response::ArtworkResource> {
+    included.iter().filter_map(|included| match included {
+        tidal_response::AlbumSearchIncluded::Artwork { resource } => Some(resource),
+        _ => None,
+    })
+}
+
+fn select_cover_url(
+    relationship: Option<&tidal_response::ArtworkRelationship>,
+    artworks: &[&tidal_response::ArtworkResource],
+) -> Option<String> {
+    let relationship = relationship?;
+
+    for related in relationship.data.as_ref()? {
+        let Some(artwork) = artworks.iter().find(|artwork| artwork.id == related.id) else {
+            continue;
+        };
+        if !artwork
+            .attributes
+            .media_type
+            .as_deref()
+            .is_some_and(|media_type| media_type == "IMAGE")
+        {
+            continue;
+        }
+
+        let mut largest_square: Option<(u32, &str)> = None;
+        let mut smallest_large_square: Option<(u32, &str)> = None;
+        for file in &artwork.attributes.files {
+            let Some(href) = file.href.as_deref() else {
+                continue;
+            };
+            let Some((width, height)) = artwork_file_dimensions(file) else {
+                continue;
+            };
+            if width != height || !is_valid_https_url(href) {
+                continue;
+            }
+
+            if largest_square.is_none_or(|(current_width, _)| width > current_width) {
+                largest_square = Some((width, href));
+            }
+            if width >= 640
+                && smallest_large_square.is_none_or(|(current_width, _)| width < current_width)
+            {
+                smallest_large_square = Some((width, href));
+            }
+        }
+
+        if let Some((_, href)) = smallest_large_square.or(largest_square) {
+            return Some(href.to_owned());
+        }
+    }
+
+    None
+}
+
+fn artwork_file_dimensions(file: &tidal_response::ArtworkFile) -> Option<(u32, u32)> {
+    match ((file.width, file.height), file.meta.as_ref()) {
+        ((Some(width), Some(height)), _) => Some((width, height)),
+        (_, Some(meta)) => Some((meta.width?, meta.height?)),
+        _ => None,
+    }
+}
+
+fn is_valid_https_url(value: &str) -> bool {
+    Url::parse(value)
+        .ok()
+        .is_some_and(|url| url.scheme() == "https" && url.host_str().is_some())
+}
+
 #[derive(Debug, Clone)]
 pub struct TidalArtist {
     pub id: String,
@@ -357,6 +473,7 @@ pub struct TidalArtist {
 pub struct TidalAlbum {
     pub id: String,
     pub title: String,
+    pub cover_url: Option<String>,
     pub release_date: Option<String>,
     pub barcode_id: Option<String>,
     pub number_of_volumes: Option<u32>,
@@ -370,10 +487,11 @@ pub struct TidalAlbum {
 }
 
 impl TidalAlbum {
-    fn from(id: String, attr: AlbumSearchIncludedAttributes) -> Self {
+    fn from(id: String, attr: AlbumSearchIncludedAttributes, cover_url: Option<String>) -> Self {
         TidalAlbum {
             id,
             title: attr.title,
+            cover_url,
             release_date: attr.release_date,
             barcode_id: attr.barcode_id,
             number_of_volumes: attr.number_of_volumes,
@@ -393,6 +511,7 @@ impl TidalAlbum {
 pub struct ResolvedTidalSearchedAlbum {
     pub id: String,
     pub title: String,
+    pub cover_url: Option<String>,
     pub barcode_id: Option<String>,
     pub number_of_volumes: Option<u32>,
     pub number_of_items: Option<u32>,
@@ -412,6 +531,7 @@ impl
         &AlbumSearchRelationshipsAlbumsData,
         &AlbumSearchIncludedAttributes,
         Vec<TidalArtist>,
+        Option<String>,
     )> for ResolvedTidalSearchedAlbum
 {
     fn from(
@@ -419,12 +539,14 @@ impl
             &AlbumSearchRelationshipsAlbumsData,
             &AlbumSearchIncludedAttributes,
             Vec<TidalArtist>,
+            Option<String>,
         ),
     ) -> Self {
-        let (data, attr, artists) = val;
+        let (data, attr, artists, cover_url) = val;
         ResolvedTidalSearchedAlbum {
             id: data.id.clone(),
             title: attr.title.clone(),
+            cover_url,
             barcode_id: attr.barcode_id.clone(),
             number_of_volumes: attr.number_of_volumes,
             number_of_items: attr.number_of_items,
@@ -496,12 +618,63 @@ mod tidal_response {
             id: String,
             attributes: ArtistIncludedAttributes,
         },
+        #[serde(rename = "artworks")]
+        Artwork {
+            #[serde(flatten)]
+            resource: ArtworkResource,
+        },
+        #[serde(other)]
+        Unknown,
     }
 
     #[derive(Debug, Deserialize, Default)]
     pub struct AlbumSearchIncludedRelationships {
         #[serde(default)]
         pub artists: AlbumSearchRelationshipsAlbums,
+        #[serde(default, rename = "coverArt")]
+        pub cover_art: Option<ArtworkRelationship>,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    pub struct ArtworkResource {
+        pub id: String,
+        #[serde(default)]
+        pub attributes: ArtworkAttributes,
+    }
+
+    #[derive(Debug, Deserialize, Clone, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ArtworkAttributes {
+        pub media_type: Option<String>,
+        #[serde(default)]
+        pub files: Vec<ArtworkFile>,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ArtworkFile {
+        pub href: Option<String>,
+        pub width: Option<u32>,
+        pub height: Option<u32>,
+        pub meta: Option<ArtworkFileMeta>,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    #[serde(rename_all = "camelCase")]
+    pub struct ArtworkFileMeta {
+        pub width: Option<u32>,
+        pub height: Option<u32>,
+    }
+
+    #[derive(Debug, Deserialize, Clone, Default)]
+    pub struct ArtworkRelationship {
+        #[serde(default)]
+        pub data: Option<Vec<ArtworkRelationshipData>>,
+    }
+
+    #[derive(Debug, Deserialize, Clone)]
+    pub struct ArtworkRelationshipData {
+        pub id: String,
     }
 
     #[derive(Debug, Deserialize)]
@@ -540,6 +713,8 @@ mod tidal_response {
     #[derive(Debug, Deserialize)]
     pub struct AlbumSingleResource {
         pub data: Option<AlbumResource>,
+        #[serde(default)]
+        pub included: Vec<AlbumSearchIncluded>,
     }
 
     #[derive(Debug, Deserialize)]
@@ -548,6 +723,8 @@ mod tidal_response {
         pub id: String,
         pub r#type: String,
         pub attributes: AlbumSearchIncludedAttributes,
+        #[serde(default)]
+        pub relationships: Option<AlbumSearchIncludedRelationships>,
     }
 
     // ---- Compound documents (include=...) ----
@@ -558,7 +735,7 @@ mod tidal_response {
         #[serde(default)]
         pub data: Vec<AlbumSearchRelationshipsAlbumsData>,
         #[serde(default)]
-        pub included: Vec<AlbumResourceIncluded>,
+        pub included: Vec<AlbumSearchIncluded>,
         #[serde(default)]
         pub links: Option<Links>,
     }
@@ -629,7 +806,11 @@ mod tidal_response {
 
 #[cfg(test)]
 mod tests {
-    use super::tidal_response::{AlbumSearchIncludedAttributes, ArtistAlbumsRelationshipDocument};
+    use super::tidal_response::{
+        AlbumSearchIncluded, AlbumSearchIncludedAttributes, ArtistAlbumsRelationshipDocument,
+        ArtworkRelationship, ArtworkRelationshipData, ArtworkResource,
+    };
+    use super::{artwork_resources, select_cover_url};
 
     /// Regression: `#[serde(rename = "camelCase")]` renames the type, not the
     /// fields, so Tidal's `releaseDate` silently deserialized to `None`.
@@ -711,17 +892,16 @@ mod tests {
         let doc: ArtistAlbumsRelationshipDocument = serde_json::from_str(json).unwrap();
 
         assert_eq!(doc.included.len(), 1);
-        let inc = &doc.included[0];
-        assert_eq!(inc.id, "546629982");
-        assert_eq!(inc.attributes.release_date.as_deref(), Some("2026-07-29"));
-        assert_eq!(inc.attributes.barcode_id.as_deref(), Some("00881061189336"));
-        assert_eq!(inc.attributes.number_of_volumes, Some(1));
-        assert_eq!(inc.attributes.number_of_items, Some(1));
-        assert_eq!(inc.attributes.access_type.as_deref(), Some("PUBLIC"));
-        assert_eq!(
-            inc.attributes.media_tags.as_deref().map(|v| v.len()),
-            Some(2)
-        );
+        let AlbumSearchIncluded::Album { id, attributes, .. } = &doc.included[0] else {
+            panic!("expected an album resource");
+        };
+        assert_eq!(id, "546629982");
+        assert_eq!(attributes.release_date.as_deref(), Some("2026-07-29"));
+        assert_eq!(attributes.barcode_id.as_deref(), Some("00881061189336"));
+        assert_eq!(attributes.number_of_volumes, Some(1));
+        assert_eq!(attributes.number_of_items, Some(1));
+        assert_eq!(attributes.access_type.as_deref(), Some("PUBLIC"));
+        assert_eq!(attributes.media_tags.as_deref().map(|v| v.len()), Some(2));
         assert!(doc.links.is_none());
     }
 
@@ -747,5 +927,147 @@ mod tests {
 
         assert_eq!(attr.title, "Michelle (Take 1)");
         assert_eq!(attr.release_date, None);
+    }
+
+    #[test]
+    fn selects_the_first_image_resource_with_the_best_square_file() {
+        let included: Vec<AlbumSearchIncluded> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "artworks",
+                "id": "video",
+                "attributes": {
+                    "mediaType": "VIDEO",
+                    "files": [{"href": "https://cdn.example/video", "width": 2000, "height": 2000}]
+                }
+            },
+            {
+                "type": "artworks",
+                "id": "not-square",
+                "attributes": {
+                    "mediaType": "IMAGE",
+                    "files": [{"href": "https://cdn.example/landscape", "width": 1200, "height": 800}]
+                }
+            },
+            {
+                "type": "artworks",
+                "id": "cover",
+                "attributes": {
+                    "mediaType": "IMAGE",
+                    "files": [
+                        {"href": "http://cdn.example/http", "width": 1600, "height": 1600},
+                        {"href": "/relative", "width": 1600, "height": 1600},
+                        {"href": "not a url", "width": 1600, "height": 1600},
+                        {"href": "https://cdn.example/large", "width": 1200, "height": 1200},
+                        {"href": "https://cdn.example/small", "width": 640, "height": 640},
+                        {"href": "https://cdn.example/tiny", "width": 320, "height": 320}
+                    ]
+                }
+            }
+        ]))
+        .unwrap();
+        let relationship = ArtworkRelationship {
+            data: Some(
+                [
+                    ArtworkRelationshipData { id: "video".into() },
+                    ArtworkRelationshipData {
+                        id: "not-square".into(),
+                    },
+                    ArtworkRelationshipData { id: "cover".into() },
+                ]
+                .into(),
+            ),
+        };
+
+        let artworks: Vec<_> = artwork_resources(&included).collect();
+        let cover = select_cover_url(Some(&relationship), &artworks);
+
+        assert_eq!(cover.as_deref(), Some("https://cdn.example/small"));
+    }
+
+    #[test]
+    fn selects_the_first_valid_artwork_resource_in_relationship_order() {
+        let included: Vec<AlbumSearchIncluded> = serde_json::from_value(serde_json::json!([
+            {
+                "type": "artworks",
+                "id": "first",
+                "attributes": {
+                    "mediaType": "IMAGE",
+                    "files": [{"href": "https://cdn.example/first", "width": 1200, "height": 1200}]
+                }
+            },
+            {
+                "type": "artworks",
+                "id": "second",
+                "attributes": {
+                    "mediaType": "IMAGE",
+                    "files": [{"href": "https://cdn.example/second", "width": 640, "height": 640}]
+                }
+            }
+        ]))
+        .unwrap();
+        let relationship = ArtworkRelationship {
+            data: Some(
+                [
+                    ArtworkRelationshipData { id: "first".into() },
+                    ArtworkRelationshipData {
+                        id: "second".into(),
+                    },
+                ]
+                .into(),
+            ),
+        };
+
+        let artworks: Vec<_> = artwork_resources(&included).collect();
+        assert_eq!(
+            select_cover_url(Some(&relationship), &artworks).as_deref(),
+            Some("https://cdn.example/first")
+        );
+    }
+
+    #[test]
+    fn does_not_combine_dimensions_from_different_metadata_pairs() {
+        let resource: ArtworkResource = serde_json::from_value(serde_json::json!({
+            "id": "cover",
+            "attributes": {
+                "mediaType": "IMAGE",
+                "files": [{
+                    "href": "https://cdn.example/mixed",
+                    "width": 640,
+                    "meta": {"width": 1200, "height": 640}
+                }]
+            }
+        }))
+        .unwrap();
+        let relationship = ArtworkRelationship {
+            data: Some(vec![ArtworkRelationshipData { id: "cover".into() }]),
+        };
+
+        let artworks = vec![&resource];
+        assert_eq!(select_cover_url(Some(&relationship), &artworks), None);
+    }
+
+    #[test]
+    fn uses_largest_square_when_no_square_file_reaches_the_threshold() {
+        let resource: ArtworkResource = serde_json::from_value(serde_json::json!({
+            "id": "cover",
+            "attributes": {
+                "mediaType": "IMAGE",
+                "files": [
+                    {"href": "https://cdn.example/medium", "meta": {"width": 500, "height": 500}},
+                    {"href": "https://cdn.example/large", "width": 600, "height": 600},
+                    {"href": "https://cdn.example/wide", "width": 1000, "height": 800}
+                ]
+            }
+        }))
+        .unwrap();
+        let relationship = ArtworkRelationship {
+            data: Some(vec![ArtworkRelationshipData { id: "cover".into() }]),
+        };
+
+        let artworks = vec![&resource];
+        assert_eq!(
+            select_cover_url(Some(&relationship), &artworks).as_deref(),
+            Some("https://cdn.example/large")
+        );
     }
 }
