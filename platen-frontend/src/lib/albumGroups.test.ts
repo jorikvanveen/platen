@@ -3,7 +3,7 @@ import { groupAlbums, sortByReleaseDate } from "$lib/albumGroups";
 import type { TidalAlbum } from "$lib/dto/TidalAlbum";
 
 function album(id: string, album_type: string, release_date: string | null): TidalAlbum {
-  return { id, title: id, album_type, release_date, popularity: 0 };
+  return { id, title: id, cover_url: null, album_type, release_date, popularity: 0 };
 }
 
 describe("sortByReleaseDate", () => {

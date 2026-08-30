@@ -14,6 +14,7 @@ pub struct Model {
     pub release_month: Option<i32>,
     pub release_day: Option<i32>,
     pub downloaded: bool,
+    pub cover_url: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -65,6 +65,7 @@ pub mod dto {
         pub id: String,
         pub artists: Vec<Artist>,
         pub title: String,
+        pub cover_url: Option<String>,
         pub album_type: Option<String>,
         pub release_year: i32,
         pub release_month: Option<i32>,
@@ -86,6 +87,7 @@ impl From<(album::Model, Vec<Artist>)> for dto::Album {
             id: model.id,
             artists,
             title: model.title,
+            cover_url: model.cover_url,
             album_type: model.album_type,
             release_year: model.release_year,
             release_month: model.release_month,
@@ -143,6 +145,13 @@ pub async fn create(
         .get_album_artists(&album_id)
         .await
         .map_err(crate::routes::utils::map_tidal_error)?;
+    let cover_url = match tidal.get_album_cover(&album_id).await {
+        Ok(cover_url) => cover_url,
+        Err(error_message) => {
+            error!("Could not fetch cover for album {album_id}: {error_message:#?}");
+            None
+        }
+    };
 
     let release_date = tidal_album
         .release_date
@@ -153,6 +162,7 @@ pub async fn create(
     let new_album = album::ActiveModel {
         id: ActiveValue::Set(tidal_album.id),
         title: ActiveValue::Set(tidal_album.title),
+        cover_url: ActiveValue::Set(cover_url),
         album_type: ActiveValue::Set(Some(tidal_album.r#type)),
         release_year: ActiveValue::Set(release_date.year),
         release_month: ActiveValue::Set(release_date.month),
