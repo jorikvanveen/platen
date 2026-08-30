@@ -77,7 +77,7 @@ struct LoginRequestBody {
 }
 
 impl Antra {
-    pub fn new(config: &crate::Config) -> Self {
+    pub fn new(config: &crate::config::Config) -> Self {
         Self {
             client: reqwest::ClientBuilder::new()
                 .cookie_store(true)

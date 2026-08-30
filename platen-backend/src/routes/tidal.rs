@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use tracing::info;
 
-use crate::{AppState, services};
+use crate::{app::AppState, services};
 
 use crate::routes::utils::map_tidal_error;
 

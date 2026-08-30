@@ -6,7 +6,7 @@ use tracing::error;
 use url::Url;
 
 use crate::{
-    AppState,
+    app::AppState,
     entity::{album, artist},
     services::tidal::{Tidal, TidalError},
 };

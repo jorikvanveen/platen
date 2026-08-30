@@ -6,7 +6,7 @@ use reqwest::StatusCode;
 use sea_orm::EntityTrait;
 use tracing::{error, info};
 
-use crate::{AppState, entity::artist};
+use crate::{app::AppState, entity::artist};
 
 pub mod dto {
     use serde::{Deserialize, Serialize};

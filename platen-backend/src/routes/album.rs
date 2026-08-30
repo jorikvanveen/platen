@@ -15,7 +15,7 @@ use sea_orm::{
 use tracing::{error, info};
 
 use crate::{
-    AppState,
+    app::AppState,
     entity::{self, album, album_artist, artist},
     routes::{artist::dto::Artist, download::dto::DownloadJob},
     services::{self, catalog_utils, downloaders::Downloader},

@@ -1,5 +1,5 @@
 use crate::{
-    AppState,
+    app::AppState,
     entity::album,
     services::download_queue::{CancelError, JobRecord, JobStatus},
 };
