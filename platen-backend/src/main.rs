@@ -41,14 +41,13 @@ async fn main() -> color_eyre::Result<()> {
     let db: DatabaseConnection = Database::connect(&config.database_url).await?;
     Migrator::up(&db, None).await?;
 
-    let bind_address = config.bind_address.clone();
     let (queue, worker_handle) = DownloadQueue::start(
         db.clone(),
         PathBuf::from(&config.music_dir),
         Arc::new(antra),
     );
     let app = router(AppState { tidal, queue, db });
-    let listener = TcpListener::bind(&bind_address).await?;
+    let listener = TcpListener::bind(&config.bind_address).await?;
 
     let server_result = tokio::select! {
         result = axum::serve(listener, app) => result,

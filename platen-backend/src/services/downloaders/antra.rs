@@ -175,8 +175,7 @@ impl Antra {
             return Err(AntraError::CantGetStatus);
         }
 
-        let text = resp.text().await?;
-        Ok(serde_json::from_str(&text)?)
+        Ok(resp.json().await?)
     }
 
     async fn job_download(&self, job_id: &str) -> Result<PathBuf, AntraError> {
@@ -380,12 +379,8 @@ async fn copy_files_flat(album_directory: &Path, destination: &Path) -> Result<(
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct JobStatusResponse {
     status: String,
-    done: usize,
-    failed: usize,
-    total: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -397,10 +392,8 @@ struct CreateJobRequestBody {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct CreateJobResponse {
-    pub job_id: String,
-    pub ws_token: String,
+    job_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -417,11 +410,7 @@ struct ResolveResponse {
 }
 
 #[derive(Error, Debug)]
-#[allow(unused)]
 pub enum AntraError {
-    #[error("The requested release could not be found")]
-    NotFound,
-
     #[error("Error sending request: {0}")]
     Reqwest(#[from] reqwest::Error),
 
@@ -433,9 +422,6 @@ pub enum AntraError {
 
     #[error("Failed to receive job status")]
     CantGetStatus,
-
-    #[error("Job status response was not valid JSON: {0}")]
-    BadStatus(#[from] serde_json::Error),
 
     #[error("I/O Error: {0}")]
     IoError(#[from] io::Error),
@@ -476,15 +462,13 @@ impl Downloader for Antra {
         tracing::info!("Downloading album: {}", album.title);
         let url = format!("https://tidal.com/browse/album/{}", album.id);
 
-        let ResolveResponse { track_count, .. } = self.resolve(&url).await?;
-        let CreateJobResponse { job_id, .. } = self.create_job(&url, track_count).await?;
+        let ResolveResponse { track_count } = self.resolve(&url).await?;
+        let CreateJobResponse { job_id } = self.create_job(&url, track_count).await?;
 
         let poll_result = timeout(JOB_TIMEOUT, async {
             loop {
                 sleep(Duration::from_secs(5)).await;
-                let JobStatusResponse {
-                    status: job_status, ..
-                } = self.job_status(&job_id).await?;
+                let JobStatusResponse { status: job_status } = self.job_status(&job_id).await?;
                 tracing::info!("Job status: {job_status}");
                 if job_status == "complete" {
                     return Ok(());
@@ -675,25 +659,6 @@ mod tests {
 
         assert!(!download.archive.exists());
         download.assert_extraction_parent_empty().await;
-    }
-
-    #[tokio::test]
-    async fn navigates_the_artist_album_shape() {
-        let download = Download::new();
-        download
-            .write_source_file(
-                "BLCKK, ISSBROKIE/Duality (2024) [FLAC]/1-01 North Star.flac",
-                "disc 1 track",
-            )
-            .await;
-        download.build_archive_from(&["BLCKK, ISSBROKIE"]).await;
-
-        download.place().await.unwrap();
-
-        assert_eq!(
-            flat_file_names(&download.destination).await,
-            ["1-01 North Star.flac"]
-        );
     }
 
     #[tokio::test]

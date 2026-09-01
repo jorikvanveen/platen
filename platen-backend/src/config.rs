@@ -4,7 +4,7 @@ use figment::{
 };
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Deserialize)]
 pub(crate) struct Config {
     pub(crate) database_url: String,
     pub(crate) bind_address: String,
@@ -19,7 +19,7 @@ impl Config {
     pub(crate) fn load() -> Result<Self, figment::Error> {
         Figment::new()
             .merge(Toml::file("platen.toml"))
-            .merge(Env::prefixed("PLATEN_").split("__"))
+            .merge(Env::prefixed("PLATEN_"))
             .extract()
     }
 }

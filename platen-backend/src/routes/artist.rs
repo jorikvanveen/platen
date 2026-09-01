@@ -36,16 +36,15 @@ pub async fn get(
     State(AppState { db, .. }): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<dto::Artist>, StatusCode> {
-    match artist::Entity::find_by_id(id).one(&db).await {
-        Ok(artist) => match artist {
-            Some(artist) => Ok(Json(artist.into())),
-            None => Err(StatusCode::NOT_FOUND),
-        },
-        Err(e) => {
-            error!("DB Error: {:#?}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
+    let artist = artist::Entity::find_by_id(id)
+        .one(&db)
+        .await
+        .map_err(|e| {
+            error!("DB Error: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(artist.into()))
 }
 
 pub async fn list(

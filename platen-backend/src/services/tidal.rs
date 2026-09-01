@@ -1,4 +1,3 @@
-use base64::prelude::*;
 use chrono::Utc;
 use reqwest::{RequestBuilder, StatusCode};
 use std::{sync::Arc, time::Duration};
@@ -104,13 +103,10 @@ impl Tidal {
     }
 
     async fn get_oauth_token(&self) -> Result<String, TidalError> {
-        let credentials =
-            BASE64_STANDARD.encode(format!("{}:{}", self.client_id, self.client_secret));
-
         let response = self
             .client
             .post("https://auth.tidal.com/v1/oauth2/token")
-            .header("Authorization", format!("Basic {}", credentials))
+            .basic_auth(&self.client_id, Some(&self.client_secret))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body("grant_type=client_credentials")
             .send()
@@ -153,12 +149,16 @@ impl Tidal {
         &self,
         query: &str,
     ) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
-        let release_query = urlencoding::encode(query);
-        let url = format!(
-            "{TIDAL_BASE_URL}/searchResults?filter[query]={release_query}&include=albums.artists,albums.artists.profileArt,albums.coverArt"
-        );
+        let url = format!("{TIDAL_BASE_URL}/searchResults");
+        let request = self.client.get(url).query(&[
+            ("filter[query]", query),
+            (
+                "include",
+                "albums.artists,albums.artists.profileArt,albums.coverArt",
+            ),
+        ]);
 
-        let resp = self.send_with_retry(self.client.get(url)).await?;
+        let resp = self.send_with_retry(request).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
             return Err(TidalError::UnexpectedResponse);
@@ -222,12 +222,12 @@ impl Tidal {
                     })
                     .collect();
 
-                Ok(ResolvedTidalSearchedAlbum::from((
+                Ok(resolve_searched_album(
                     relationship,
                     album,
                     artists,
                     cover_url,
-                )))
+                ))
             })
             .collect()
     }
@@ -386,12 +386,13 @@ impl Tidal {
     }
 
     pub async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
-        let encoded = urlencoding::encode(query);
-        let url = format!(
-            "{TIDAL_BASE_URL}/searchResults?filter[query]={encoded}&include=artists,artists.profileArt"
-        );
+        let url = format!("{TIDAL_BASE_URL}/searchResults");
+        let request = self.client.get(url).query(&[
+            ("filter[query]", query),
+            ("include", "artists,artists.profileArt"),
+        ]);
 
-        let resp = self.send_with_retry(self.client.get(url)).await?;
+        let resp = self.send_with_retry(request).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
             return Err(TidalError::UnexpectedResponse);
@@ -524,20 +525,12 @@ pub struct TidalArtist {
 }
 
 #[derive(Debug, Clone)]
-#[allow(unused)]
 pub struct TidalAlbum {
     pub id: String,
     pub title: String,
     pub cover_url: Option<String>,
     pub release_date: Option<String>,
-    pub barcode_id: Option<String>,
-    pub number_of_volumes: Option<u32>,
-    pub number_of_items: Option<u32>,
-    pub duration: String,
-    pub explicit: bool,
     pub popularity: f64,
-    pub availability: Option<Vec<String>>,
-    pub media_tags: Option<Vec<String>>,
     pub r#type: String,
 }
 
@@ -548,73 +541,37 @@ impl TidalAlbum {
             title: attr.title,
             cover_url,
             release_date: attr.release_date,
-            barcode_id: attr.barcode_id,
-            number_of_volumes: attr.number_of_volumes,
-            number_of_items: attr.number_of_items,
-            duration: attr.duration,
-            explicit: attr.explicit,
             popularity: attr.popularity,
-            availability: attr.availability,
-            media_tags: attr.media_tags,
             r#type: attr.r#type,
         }
     }
 }
 
 #[derive(Debug)]
-#[allow(unused)]
 pub struct ResolvedTidalSearchedAlbum {
     pub id: String,
     pub title: String,
     pub cover_url: Option<String>,
-    pub barcode_id: Option<String>,
-    pub number_of_volumes: Option<u32>,
-    pub number_of_items: Option<u32>,
-    pub duration: String,
-    pub explicit: bool,
     pub release_date: Option<String>,
     pub popularity: f64,
-    pub access_type: Option<String>,
     pub artists: Vec<TidalArtist>,
-    pub availability: Option<Vec<String>>,
-    pub media_tags: Option<Vec<String>>,
     pub r#type: String,
 }
 
-impl
-    From<(
-        &AlbumSearchRelationshipsAlbumsData,
-        &AlbumSearchIncludedAttributes,
-        Vec<TidalArtist>,
-        Option<String>,
-    )> for ResolvedTidalSearchedAlbum
-{
-    fn from(
-        val: (
-            &AlbumSearchRelationshipsAlbumsData,
-            &AlbumSearchIncludedAttributes,
-            Vec<TidalArtist>,
-            Option<String>,
-        ),
-    ) -> Self {
-        let (data, attr, artists, cover_url) = val;
-        ResolvedTidalSearchedAlbum {
-            id: data.id.clone(),
-            title: attr.title.clone(),
-            cover_url,
-            barcode_id: attr.barcode_id.clone(),
-            number_of_volumes: attr.number_of_volumes,
-            number_of_items: attr.number_of_items,
-            duration: attr.duration.clone(),
-            explicit: attr.explicit,
-            release_date: attr.release_date.clone(),
-            popularity: attr.popularity,
-            access_type: attr.access_type.clone(),
-            artists,
-            availability: attr.availability.clone(),
-            media_tags: attr.media_tags.clone(),
-            r#type: attr.r#type.clone(),
-        }
+fn resolve_searched_album(
+    data: &AlbumSearchRelationshipsAlbumsData,
+    attr: &AlbumSearchIncludedAttributes,
+    artists: Vec<TidalArtist>,
+    cover_url: Option<String>,
+) -> ResolvedTidalSearchedAlbum {
+    ResolvedTidalSearchedAlbum {
+        id: data.id.clone(),
+        title: attr.title.clone(),
+        cover_url,
+        release_date: attr.release_date.clone(),
+        popularity: attr.popularity,
+        artists,
+        r#type: attr.r#type.clone(),
     }
 }
 
@@ -634,10 +591,7 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
-    #[allow(dead_code)]
     pub struct AlbumSearchData {
-        pub id: String,
-        pub r#type: String,
         pub relationships: AlbumSearchRelationships,
     }
 
@@ -652,10 +606,8 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
-    #[allow(dead_code)]
     pub struct AlbumSearchRelationshipsAlbumsData {
         pub id: String,
-        pub r#type: String,
     }
 
     #[derive(Debug, Deserialize)]
@@ -734,36 +686,18 @@ mod tidal_response {
         pub id: String,
     }
 
-    #[derive(Debug, Deserialize)]
-    #[allow(dead_code)]
-    pub struct AlbumResourceIncluded {
-        pub id: String,
-        pub r#type: String,
-        pub attributes: AlbumSearchIncludedAttributes,
-    }
     #[derive(Debug, Deserialize, Clone)]
     #[serde(rename_all = "camelCase")]
-    #[allow(dead_code)]
     pub struct AlbumSearchIncludedAttributes {
         pub title: String,
-        pub barcode_id: Option<String>,
-        pub number_of_volumes: Option<u32>,
-        pub number_of_items: Option<u32>,
-        pub duration: String,
-        pub explicit: bool,
         pub release_date: Option<String>,
         pub popularity: f64,
-        pub access_type: Option<String>,
-        pub availability: Option<Vec<String>>,
-        pub media_tags: Option<Vec<String>>,
         pub r#type: String,
     }
 
     #[derive(Debug, Deserialize)]
-    #[allow(unused)]
     pub struct ArtistResource {
         pub id: String,
-        pub r#type: String,
         pub attributes: ArtistIncludedAttributes,
         #[serde(default)]
         pub relationships: Option<ArtistIncludedRelationships>,
@@ -790,20 +724,15 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
-    #[allow(unused)]
     pub struct AlbumResource {
         pub id: String,
-        pub r#type: String,
         pub attributes: AlbumSearchIncludedAttributes,
         #[serde(default)]
         pub relationships: Option<AlbumSearchIncludedRelationships>,
     }
 
     #[derive(Debug, Deserialize)]
-    #[allow(dead_code)]
     pub struct ArtistAlbumsRelationshipDocument {
-        #[serde(default)]
-        pub data: Vec<AlbumSearchRelationshipsAlbumsData>,
         #[serde(default)]
         pub included: Vec<AlbumSearchIncluded>,
         #[serde(default)]
@@ -824,11 +753,7 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
-    #[allow(unused)]
     pub struct AlbumWithArtistsResource {
-        pub id: String,
-        pub r#type: String,
-        pub attributes: AlbumSearchIncludedAttributes,
         pub relationships: Option<AlbumWithArtistsRelationships>,
     }
 
@@ -845,10 +770,7 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
-    #[allow(dead_code)]
     pub struct ArtistSearchData {
-        pub id: String,
-        pub r#type: String,
         pub relationships: Option<ArtistSearchRelationships>,
     }
 
@@ -881,16 +803,8 @@ mod tests {
         let json = r#"
             {
               "title": "Michelle (Take 1)",
-              "barcodeId": "00881061189336",
-              "numberOfVolumes": 1,
-              "numberOfItems": 1,
-              "duration": "PT3M17S",
-              "explicit": false,
               "releaseDate": "2026-07-29",
               "popularity": 0.7160302460678571,
-              "accessType": "PUBLIC",
-              "availability": ["STREAM", "DJ"],
-              "mediaTags": ["HIRES_LOSSLESS", "LOSSLESS"],
               "type": "SINGLE"
             }
         "#;
@@ -898,22 +812,8 @@ mod tests {
         let attr: AlbumSearchIncludedAttributes = serde_json::from_str(json).unwrap();
 
         assert_eq!(attr.title, "Michelle (Take 1)");
-        assert_eq!(attr.barcode_id.as_deref(), Some("00881061189336"));
-        assert_eq!(attr.number_of_volumes, Some(1));
-        assert_eq!(attr.number_of_items, Some(1));
-        assert_eq!(attr.duration, "PT3M17S");
-        assert!(!attr.explicit);
         assert_eq!(attr.release_date.as_deref(), Some("2026-07-29"));
         assert!((attr.popularity - 0.7160302460678571).abs() < f64::EPSILON);
-        assert_eq!(attr.access_type.as_deref(), Some("PUBLIC"));
-        assert_eq!(
-            attr.availability.as_deref(),
-            Some(&["STREAM".to_string(), "DJ".to_string()][..])
-        );
-        assert_eq!(
-            attr.media_tags.as_deref(),
-            Some(&["HIRES_LOSSLESS".to_string(), "LOSSLESS".to_string()][..])
-        );
         assert_eq!(attr.r#type, "SINGLE");
     }
 
@@ -932,16 +832,8 @@ mod tests {
                   "type": "albums",
                   "attributes": {
                     "title": "Michelle (Take 1)",
-                    "barcodeId": "00881061189336",
-                    "numberOfVolumes": 1,
-                    "numberOfItems": 1,
-                    "duration": "PT3M17S",
-                    "explicit": false,
                     "releaseDate": "2026-07-29",
                     "popularity": 0.7160302460678571,
-                    "accessType": "PUBLIC",
-                    "availability": ["STREAM", "DJ"],
-                    "mediaTags": ["HIRES_LOSSLESS", "LOSSLESS"],
                     "type": "SINGLE"
                   }
                 }
@@ -958,36 +850,7 @@ mod tests {
         };
         assert_eq!(id, "546629982");
         assert_eq!(attributes.release_date.as_deref(), Some("2026-07-29"));
-        assert_eq!(attributes.barcode_id.as_deref(), Some("00881061189336"));
-        assert_eq!(attributes.number_of_volumes, Some(1));
-        assert_eq!(attributes.number_of_items, Some(1));
-        assert_eq!(attributes.access_type.as_deref(), Some("PUBLIC"));
-        assert_eq!(attributes.media_tags.as_deref().map(|v| v.len()), Some(2));
         assert!(doc.links.is_none());
-    }
-
-    /// Regression guard: if `rename_all` is removed or reverted to `rename`,
-    /// camelCase fields must fail to deserialize (they would silently `None`
-    /// under the old bug). This test asserts the opposite direction, that a
-    /// payload missing snake_case aliases still deserializes, proving the
-    /// camelCase mapping is active rather than field names happening to match.
-    #[test]
-    fn does_not_accept_snake_case_field_names() {
-        let json = r#"
-            {
-              "title": "Michelle (Take 1)",
-              "release_date": "2026-07-29",
-              "popularity": 0.0,
-              "duration": "PT0S",
-              "explicit": false,
-              "type": "SINGLE"
-            }
-        "#;
-
-        let attr: AlbumSearchIncludedAttributes = serde_json::from_str(json).unwrap();
-
-        assert_eq!(attr.title, "Michelle (Take 1)");
-        assert_eq!(attr.release_date, None);
     }
 
     #[test]

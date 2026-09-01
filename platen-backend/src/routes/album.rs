@@ -629,7 +629,6 @@ pub async fn fetch_all_artist_albums(
         .filter(album_artist::Column::ArtistId.eq(&artist_id))
         .find_also_related(album::Entity)
         .order_by_asc(album_artist::Column::AlbumId)
-        .order_by_asc(album_artist::Column::Position)
         .all(&db)
         .await
         .map_err(|e| {
@@ -637,27 +636,24 @@ pub async fn fetch_all_artist_albums(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let mut result = stream::iter(rows.into_iter().enumerate().filter_map(
-        |(index, (_, album_model))| {
-            album_model.map(|album_model| {
-                let db = &db;
-                async move {
-                    let artists = credited_artists(db, &album_model.id).await?;
-                    Ok::<_, sea_orm::DbErr>((index, (album_model, artists).into()))
-                }
-            })
-        },
-    ))
-    .buffer_unordered(20)
+    let result = stream::iter(rows.into_iter().filter_map(|(_, album_model)| {
+        album_model.map(|album_model| {
+            let db = &db;
+            async move {
+                let artists = credited_artists(db, &album_model.id).await?;
+                Ok::<_, sea_orm::DbErr>((album_model, artists).into())
+            }
+        })
+    }))
+    .buffered(20)
     .try_collect::<Vec<_>>()
     .await
     .map_err(|e| {
         error!("Db error: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    result.sort_by_key(|(index, _)| *index);
 
-    Ok(Json(result.into_iter().map(|(_, album)| album).collect()))
+    Ok(Json(result))
 }
 
 #[axum::debug_handler]

@@ -140,11 +140,6 @@ impl DownloadQueue {
         Ok(record)
     }
 
-    #[cfg(test)]
-    pub async fn active(&self) -> Vec<JobRecord> {
-        self.state.lock().await.active.clone()
-    }
-
     pub async fn snapshot(&self) -> (Vec<JobRecord>, Vec<JobRecord>) {
         let state = self.state.lock().await;
         (

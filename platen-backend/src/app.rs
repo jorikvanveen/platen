@@ -132,18 +132,7 @@ mod tests {
 
         fn record_start(&self) {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            let mut maximum = self.max_active.load(Ordering::SeqCst);
-            while active > maximum {
-                match self.max_active.compare_exchange(
-                    maximum,
-                    active,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => break,
-                    Err(current) => maximum = current,
-                }
-            }
+            self.max_active.fetch_max(active, Ordering::SeqCst);
             self.started.notify_one();
         }
     }
@@ -312,7 +301,7 @@ mod tests {
             queue.enqueue("album-1".to_owned()).await,
             Err(crate::services::download_queue::QueueError::WorkerStopped)
         ));
-        assert!(queue.active().await.is_empty());
+        assert!(queue.snapshot().await.0.is_empty());
     }
 
     #[tokio::test]
@@ -390,7 +379,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
-        assert!(queue.active().await.is_empty());
+        assert!(queue.snapshot().await.0.is_empty());
         worker_handle.abort();
         let _ = worker_handle.await;
     }
@@ -458,11 +447,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(queue.active().await.len(), 1_001);
+        assert_eq!(queue.snapshot().await.0.len(), 1_001);
         assert!(
             !queue
-                .active()
+                .snapshot()
                 .await
+                .0
                 .iter()
                 .any(|job| job.album_id == "album-over-limit")
         );
