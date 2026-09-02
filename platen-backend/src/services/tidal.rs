@@ -165,71 +165,7 @@ impl Tidal {
         }
 
         let resp: tidal_response::AlbumSearch = resp.json().await?;
-
-        let relationships = &resp
-            .data
-            .first()
-            .ok_or(TidalError::UnexpectedResponse)?
-            .relationships
-            .albums
-            .data;
-        let artworks: Vec<_> = artwork_resources(&resp.included).collect();
-
-        relationships
-            .iter()
-            .map(|relationship| {
-                let (album, artist_ids, cover_url) = resp
-                    .included
-                    .iter()
-                    .find_map(|included| match included {
-                        AlbumSearchIncluded::Album {
-                            id,
-                            attributes,
-                            relationships,
-                        } if id == &relationship.id => Some((
-                            attributes,
-                            relationships
-                                .artists
-                                .data
-                                .iter()
-                                .map(|artist| artist.id.clone())
-                                .collect::<Vec<_>>(),
-                            select_artwork_url(relationships.cover_art.as_ref(), &artworks),
-                        )),
-                        _ => None,
-                    })
-                    .ok_or(TidalError::UnexpectedResponse)?;
-
-                let artists = resp
-                    .included
-                    .iter()
-                    .filter_map(|included| match included {
-                        AlbumSearchIncluded::Artist {
-                            id,
-                            attributes,
-                            relationships,
-                        } if artist_ids.iter().any(|artist_id| artist_id == id) => {
-                            Some(TidalArtist {
-                                id: id.clone(),
-                                name: attributes.name.clone(),
-                                profile_image_url: select_profile_image_url(
-                                    relationships.as_ref(),
-                                    &artworks,
-                                ),
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect();
-
-                Ok(resolve_searched_album(
-                    relationship,
-                    album,
-                    artists,
-                    cover_url,
-                ))
-            })
-            .collect()
+        resolve_album_search(&resp)
     }
 
     pub async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError> {
@@ -558,6 +494,72 @@ pub struct ResolvedTidalSearchedAlbum {
     pub r#type: String,
 }
 
+fn resolve_album_search(
+    response: &tidal_response::AlbumSearch,
+) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
+    let relationships = &response
+        .data
+        .first()
+        .ok_or(TidalError::UnexpectedResponse)?
+        .relationships
+        .albums
+        .data;
+    let artworks: Vec<_> = artwork_resources(&response.included).collect();
+
+    relationships
+        .iter()
+        .map(|relationship| {
+            let (album, album_relationships) = response
+                .included
+                .iter()
+                .find_map(|included| match included {
+                    AlbumSearchIncluded::Album {
+                        id,
+                        attributes,
+                        relationships,
+                    } if id == &relationship.id => Some((attributes, relationships)),
+                    _ => None,
+                })
+                .ok_or(TidalError::UnexpectedResponse)?;
+
+            let artists = album_relationships
+                .artists
+                .data
+                .iter()
+                .map(|artist_relationship| {
+                    response
+                        .included
+                        .iter()
+                        .find_map(|included| match included {
+                            AlbumSearchIncluded::Artist {
+                                id,
+                                attributes,
+                                relationships,
+                            } if id == &artist_relationship.id => Some(TidalArtist {
+                                id: id.clone(),
+                                name: attributes.name.clone(),
+                                profile_image_url: select_profile_image_url(
+                                    relationships.as_ref(),
+                                    &artworks,
+                                ),
+                            }),
+                            _ => None,
+                        })
+                        .ok_or(TidalError::UnexpectedResponse)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let cover_url = select_artwork_url(album_relationships.cover_art.as_ref(), &artworks);
+
+            Ok(resolve_searched_album(
+                relationship,
+                album,
+                artists,
+                cover_url,
+            ))
+        })
+        .collect()
+}
+
 fn resolve_searched_album(
     data: &AlbumSearchRelationshipsAlbumsData,
     attr: &AlbumSearchIncludedAttributes,
@@ -789,11 +791,66 @@ mod tidal_response {
 #[cfg(test)]
 mod tests {
     use super::tidal_response::{
-        AlbumSearchIncluded, AlbumSearchIncludedAttributes, AlbumWithArtistsDocument,
+        AlbumSearch, AlbumSearchIncluded, AlbumSearchIncludedAttributes, AlbumWithArtistsDocument,
         ArtistAlbumsRelationshipDocument, ArtistSingleResource, ArtworkRelationship,
         ArtworkRelationshipData, ArtworkResource,
     };
-    use super::{artwork_resources, select_artwork_url, select_profile_image_url};
+    use super::{
+        artwork_resources, resolve_album_search, select_artwork_url, select_profile_image_url,
+    };
+
+    #[test]
+    fn resolves_album_artists_in_relationship_order() {
+        let response: AlbumSearch = serde_json::from_value(serde_json::json!({
+            "data": [{
+                "relationships": {
+                    "albums": {
+                        "data": [{"id": "album-1", "type": "albums"}]
+                    }
+                }
+            }],
+            "included": [
+                {
+                    "type": "albums",
+                    "id": "album-1",
+                    "attributes": {
+                        "title": "Shared Billing",
+                        "releaseDate": "2026-09-02",
+                        "popularity": 0.5,
+                        "type": "ALBUM"
+                    },
+                    "relationships": {
+                        "artists": {
+                            "data": [
+                                {"id": "primary", "type": "artists"},
+                                {"id": "featured", "type": "artists"}
+                            ]
+                        }
+                    }
+                },
+                {
+                    "type": "artists",
+                    "id": "featured",
+                    "attributes": {"name": "Featured Artist"}
+                },
+                {
+                    "type": "artists",
+                    "id": "primary",
+                    "attributes": {"name": "Primary Artist"}
+                }
+            ]
+        }))
+        .unwrap();
+
+        let albums = resolve_album_search(&response).unwrap();
+        let artist_ids: Vec<_> = albums[0]
+            .artists
+            .iter()
+            .map(|artist| artist.id.as_str())
+            .collect();
+
+        assert_eq!(artist_ids, ["primary", "featured"]);
+    }
 
     /// Regression: `#[serde(rename = "camelCase")]` renames the type, not the
     /// fields, so Tidal's `releaseDate` silently deserialized to `None`.
