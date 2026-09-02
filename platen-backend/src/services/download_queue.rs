@@ -50,7 +50,7 @@ pub struct DownloadQueue {
     sender: mpsc::UnboundedSender<String>,
 }
 
-const HISTORY_LIMIT: usize = 1000;
+const HISTORY_LIMIT: usize = 100;
 const QUEUED_JOB_LIMIT: usize = 1_000;
 
 struct QueueState {
