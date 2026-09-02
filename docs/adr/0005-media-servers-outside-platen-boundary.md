@@ -2,6 +2,9 @@
 
 Status: accepted
 
+ADR-0007 supersedes the parts of this record that prohibit Music directory
+scans from creating Catalog Albums or updating their downloaded state.
+
 Platen owns its Catalog and the layout of its Music directory. Media servers
 may scan the Music directory, but Platen does not query their catalogs,
 reconcile their state, store their identifiers, or request scans. Albums enter
@@ -30,7 +33,8 @@ tied catalog rows to services that do not own Platen's Catalog.
   downloads.
 - Platen keeps its existing catalog-derived Music directory layout so Jellyfin
   and other media servers can scan the files independently.
-- Files and media-server records never create or delete catalog Albums.
+- Media-server records never create or delete catalog Albums. ADR-0007 permits
+  a Music directory scan to create an Album only after a unique Tidal match.
 - Platen stores no Jellyfin or MusicBrainz cross-reference identifiers.
 - ADR-0001 and ADR-0004 remain accepted, but this decision supersedes their
   descriptions of Jellyfin Import, MusicBrainz linking, and external

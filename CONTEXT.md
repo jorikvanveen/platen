@@ -32,10 +32,10 @@ _Avoid_: main artist, album artist
 
 **Album**:
 A release represented in the catalog. Identified by its Tidal album ID and
-credited to one or more Artists. An Album enters the catalog only when the user
-adds it from Tidal. Files and media-server records never create or delete
-Albums. A release may be an album, EP, or single. The name "Album" is the
-entity's name, not a claim that every one is a full-length album.
+credited to one or more Artists. An Album enters the catalog when the user adds
+it from Tidal or a user-requested Music directory scan finds exactly one Tidal
+match. A release may be an album, EP, or single. The name "Album" is the entity's
+name, not a claim that every one is a full-length album.
 _Avoid_: release, record
 
 **Album cover**:
@@ -49,10 +49,9 @@ catalog without one.
 _Avoid_: artist picture, avatar
 
 **Downloaded Album**:
-An Album whose audio Platen successfully placed in the Music directory. This
-records Platen's completed work; changes made directly to the files do not
-change the Album's downloaded status.
-_Avoid_: completed Album, installed Album
+An Album whose audio is present in the Music directory, regardless of how it
+arrived there. A Downloaded Album has an Album location; any other Album does not.
+_Avoid_: Present Album, imported Album, installed Album
 
 ## External services
 
@@ -67,12 +66,21 @@ it to platen as a file. Download depends on the Album's Tidal ID being valid
 in Tidal. See Music directory for what platen does with the file.
 
 **Music directory**:
-The directory where platen stores downloaded audio. Platen derives its layout
-from the catalog: one directory per Artist, containing one directory per Album
-named for its title and release year. Platen discards directory structure
-provided by a downloader. Media servers may scan this directory, but platen
-does not read from or reconcile against them.
+The configured directory where platen stores and discovers audio. Its layout is
+one directory per Primary artist, containing one directory per Album named for
+its title and release year. Media servers may scan this directory independently.
 _Avoid_: library, collection, folder structure, music dir convention
+
+**Album location**:
+An Album directory's path relative to the Music directory. Its presence means
+Platen has observed audio for the Album; its absence means Platen has not.
+_Avoid_: absolute path, album path, downloaded flag
+
+**Music directory scan**:
+A user-requested, read-only inspection of the Music directory using its Artist
+and Album directory layout. Platen does not watch, move, rename, or delete files
+during a scan.
+_Avoid_: filesystem import, filesystem watcher, reconciliation
 
 ## Download workflow
 
