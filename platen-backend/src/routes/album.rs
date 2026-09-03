@@ -18,7 +18,7 @@ use crate::{
     app::AppState,
     entity::{self, album, album_artist, artist},
     routes::{artist::dto::Artist, download::dto::DownloadJob},
-    services::{self, catalog_utils, downloaders::Downloader},
+    services::{self, catalog_utils, downloaders::Downloader, filesystem::album_location},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,31 +26,6 @@ pub struct ReleaseDate {
     pub year: i32,
     pub month: Option<i32>,
     pub day: Option<i32>,
-}
-
-fn sanitize_filename_component(value: &str) -> String {
-    let mut sanitized = String::new();
-    for character in value.chars() {
-        match character {
-            '/' | '\\' => {
-                if !sanitized.ends_with(" - ") {
-                    sanitized.push_str(" - ");
-                }
-            }
-            ':' | '*' | '?' | '"' | '<' | '>' | '|' => {
-                sanitized.push('_');
-            }
-            character if character.is_control() => sanitized.push('_'),
-            character => sanitized.push(character),
-        }
-    }
-
-    let sanitized = sanitized.trim().trim_end_matches([' ', '.']);
-    if sanitized.is_empty() {
-        "Unknown album".to_owned()
-    } else {
-        sanitized.to_owned()
-    }
 }
 
 pub mod dto {
@@ -70,7 +45,7 @@ pub mod dto {
         pub release_year: i32,
         pub release_month: Option<i32>,
         pub release_day: Option<i32>,
-        pub downloaded: bool,
+        pub relative_path: Option<String>,
     }
 
     #[derive(Debug, Serialize, TS)]
@@ -92,7 +67,7 @@ impl From<(album::Model, Vec<Artist>)> for dto::Album {
             release_year: model.release_year,
             release_month: model.release_month,
             release_day: model.release_day,
-            downloaded: model.downloaded,
+            relative_path: model.relative_path,
         }
     }
 }
@@ -271,10 +246,7 @@ mod tests {
     use sea_orm::{ActiveModelTrait, Database, EntityTrait, Set};
     use thiserror::Error;
 
-    use super::{
-        DownloadError, ReleaseDate, credited_artists, download_with, parse_release_date,
-        sanitize_filename_component,
-    };
+    use super::{DownloadError, ReleaseDate, credited_artists, download_with, parse_release_date};
     use crate::{
         entity::{album, album_artist, artist},
         services::downloaders::Downloader,
@@ -310,7 +282,7 @@ mod tests {
 
     async fn insert_test_album(
         db: &sea_orm::DatabaseConnection,
-        downloaded: Option<bool>,
+        relative_path: Option<&str>,
     ) -> album::Model {
         let mut new_album = album::ActiveModel {
             id: Set("album-1".into()),
@@ -321,8 +293,8 @@ mod tests {
             release_day: Set(None),
             ..Default::default()
         };
-        if let Some(downloaded) = downloaded {
-            new_album.downloaded = Set(downloaded);
+        if let Some(relative_path) = relative_path {
+            new_album.relative_path = Set(Some(relative_path.to_owned()));
         }
         let album = new_album.insert(db).await.unwrap();
         artist::ActiveModel {
@@ -342,24 +314,6 @@ mod tests {
         .await
         .unwrap();
         album
-    }
-
-    #[test]
-    fn sanitizes_path_separators_without_losing_readability() {
-        assert_eq!(
-            sanitize_filename_component("Speakerboxxx/The Love Below"),
-            "Speakerboxxx - The Love Below"
-        );
-        assert_eq!(sanitize_filename_component("A\\B/C"), "A - B - C");
-    }
-
-    #[test]
-    fn replaces_invalid_characters_and_falls_back_for_empty_names() {
-        assert_eq!(
-            sanitize_filename_component("A:B* C? D\" E< F> G|"),
-            "A_B_ C_ D_ E_ F_ G_"
-        );
-        assert_eq!(sanitize_filename_component("...   "), "Unknown album");
     }
 
     #[test]
@@ -419,6 +373,7 @@ mod tests {
             release_year: Set(2026),
             release_month: Set(Some(8)),
             release_day: Set(Some(29)),
+            relative_path: Set(Some("Primary/Shared Credit (2026)".to_owned())),
             ..Default::default()
         }
         .insert(&db)
@@ -450,20 +405,26 @@ mod tests {
 
         assert_eq!(
             dto.artists
-                .into_iter()
-                .map(|artist| artist.id)
+                .iter()
+                .map(|artist| artist.id.as_str())
                 .collect::<Vec<_>>(),
             ["primary", "featured"]
         );
-        assert!(!dto.downloaded);
+        assert_eq!(
+            dto.relative_path.as_deref(),
+            Some("Primary/Shared Credit (2026)")
+        );
+        let serialized = serde_json::to_value(&dto).unwrap();
+        assert!(serialized.get("relative_path").is_some());
+        assert!(serialized.get("downloaded").is_none());
     }
 
     #[tokio::test]
-    async fn new_albums_default_to_not_downloaded() {
+    async fn new_albums_default_to_no_location() {
         let db = test_database().await;
         let album = insert_test_album(&db, None).await;
 
-        assert!(!album.downloaded);
+        assert!(album.relative_path.is_none());
     }
 
     #[tokio::test]
@@ -481,7 +442,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(album.downloaded);
+        assert_eq!(
+            album.relative_path.as_deref(),
+            Some("Test artist/Test album (2026)")
+        );
     }
 
     #[tokio::test]
@@ -502,13 +466,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(!album.downloaded);
+        assert!(album.relative_path.is_none());
     }
 
     #[tokio::test]
     async fn downloaded_album_conflicts_without_starting_another_download() {
         let db = test_database().await;
-        insert_test_album(&db, Some(true)).await;
+        insert_test_album(&db, Some("Test artist/Test album (2026)")).await;
         let downloader = TestDownloader { result: Ok(()) };
 
         assert_eq!(
@@ -667,11 +631,12 @@ pub async fn download(
         .map_err(|error| {
             error!("Could not load album before enqueueing download: {error:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    if album.as_ref().is_some_and(|album| album.downloaded) {
+        })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if album.relative_path.is_some() {
         return Err(StatusCode::CONFLICT);
     }
-    let release_name = album.map(|album| album.title);
+    let release_name = Some(album.title);
     let job = queue.enqueue(album_id).await.map_err(|error| match error {
         services::download_queue::QueueError::Full => StatusCode::TOO_MANY_REQUESTS,
         services::download_queue::QueueError::WorkerStopped => {
@@ -726,7 +691,7 @@ pub(crate) async fn download_with(
             DownloadError::Catalog
         })?;
 
-    if album.downloaded {
+    if album.relative_path.is_some() {
         return Err(DownloadError::AlreadyDownloaded);
     }
 
@@ -759,12 +724,8 @@ pub(crate) async fn download_with(
     } else {
         album.release_year
     };
-    let album_directory = format!(
-        "{} ({})",
-        sanitize_filename_component(&album.title),
-        release_year
-    );
-    let destination = music_dir.join(&primary.name).join(album_directory);
+    let relative_path = album_location(&primary.name, &album.title, release_year);
+    let destination = music_dir.join(&relative_path);
 
     downloader
         .download_album(&album, &destination)
@@ -775,9 +736,9 @@ pub(crate) async fn download_with(
         })?;
 
     let mut active: album::ActiveModel = album.into();
-    active.downloaded = Set(true);
+    active.relative_path = Set(Some(relative_path));
     active.update(db).await.map_err(|e| {
-        error!("Db error marking album as downloaded: {e:#?}");
+        error!("Db error saving Album location: {e:#?}");
         DownloadError::Save
     })?;
 

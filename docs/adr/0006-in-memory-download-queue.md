@@ -11,7 +11,7 @@ The worker loads the Album and its Primary artist when it starts a job. That
 keeps the destination based on current catalog metadata rather than a snapshot
 captured when the user clicked Download. The worker handles database, placement,
 and downloader failures as job failures, then continues with the next queued
-job. Successful placement marks the Album as downloaded.
+job. Successful placement stores the Album's location relative to the Music directory.
 
 Queued and running jobs live only in process memory. Process shutdown aborts
 the worker and discards all queued and running jobs. Platen does not recover

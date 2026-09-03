@@ -9,7 +9,7 @@
 	let downloadState: Record<string, "starting" | "accepted" | "error"> = $state({});
 
 	async function download(id: string) {
-		if (data.albums.find((album) => album.id === id)?.downloaded) return;
+		if (data.albums.find((album) => album.id === id)?.relative_path !== null) return;
 
 		delete downloadState[id];
 		downloadState[id] = "starting";
@@ -48,6 +48,7 @@
 				</span>
 				<span>{album.release_year}</span>
 				{#if album.album_type}<span>{album.album_type}</span>{/if}
+				{#if album.relative_path}<span class="album-location">{album.relative_path}</span>{/if}
 			{/snippet}
 			{#snippet action()}
 				{#if downloadState[album.id] === "accepted"}
@@ -56,12 +57,12 @@
 					</div>
 				{:else}
 					<button
-						class:success={album.downloaded}
+						class:success={album.relative_path !== null}
 						class:error={downloadState[album.id] === "error"}
-						disabled={album.downloaded || downloadState[album.id] === "starting"}
+						disabled={album.relative_path !== null || downloadState[album.id] === "starting"}
 						onclick={() => download(album.id)}
 					>
-						{downloadState[album.id] === "starting" ? "Starting…" : album.downloaded ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
+						{downloadState[album.id] === "starting" ? "Starting…" : album.relative_path !== null ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
 					</button>
 				{/if}
 			{/snippet}
@@ -90,6 +91,13 @@
 	.credit-list a:hover,
 	.active-download a:hover {
 		text-decoration: underline;
+	}
+
+	.album-location {
+		max-width: 28rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.active-download {

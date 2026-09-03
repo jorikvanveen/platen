@@ -356,7 +356,7 @@ mod tests {
         insert_test_album(&db, "album-1").await;
         album::ActiveModel {
             id: Set("album-1".to_owned()),
-            downloaded: Set(true),
+            relative_path: Set(Some("Test artist/Album album-1 (2026)".to_owned())),
             ..Default::default()
         }
         .update(&db)
@@ -379,6 +379,31 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        assert!(queue.snapshot().await.0.is_empty());
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn unknown_album_is_rejected_before_enqueueing() {
+        let db = test_database().await;
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+        let app = router(app_state(db, queue.clone()));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/albums/unknown/download")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), reqwest::StatusCode::NOT_FOUND);
         assert!(queue.snapshot().await.0.is_empty());
         worker_handle.abort();
         let _ = worker_handle.await;
@@ -418,7 +443,9 @@ mod tests {
     #[tokio::test]
     async fn queue_accepts_one_thousand_waiting_jobs_and_rejects_the_next() {
         let db = test_database().await;
-        insert_test_album(&db, "album-running").await;
+        for album_id in ["album-running", "album-queued-0", "album-over-limit"] {
+            insert_test_album(&db, album_id).await;
+        }
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
             DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
@@ -430,7 +457,10 @@ mod tests {
             .unwrap();
         let first_queued = enqueue(&app, "album-queued-0").await;
         for index in 1..1_000 {
-            enqueue(&app, &format!("album-queued-{index}")).await;
+            queue
+                .enqueue(format!("album-queued-{index}"))
+                .await
+                .unwrap();
         }
 
         let duplicate = enqueue(&app, "album-queued-0").await;
