@@ -197,6 +197,10 @@ mod tests {
         }
     }
 
+    fn temp_music_dir() -> PathBuf {
+        tempfile::tempdir().unwrap().path().to_path_buf()
+    }
+
     async fn enqueue(app: &Router, album_id: &str) -> serde_json::Value {
         let response = app
             .clone()
@@ -249,7 +253,7 @@ mod tests {
         let db = test_database().await;
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader);
         let app = router(app_state(db, queue));
 
         let response = app
@@ -293,7 +297,7 @@ mod tests {
         insert_test_album(&db, "album-1").await;
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db, PathBuf::from("/tmp/music"), downloader);
+            DownloadQueue::start(db, temp_music_dir(), downloader);
         worker_handle.abort();
         let _ = worker_handle.await;
 
@@ -310,7 +314,7 @@ mod tests {
         insert_test_album(&db, "album-1").await;
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader.clone());
         let app = router(app_state(db, queue));
 
         let response = app
@@ -364,7 +368,7 @@ mod tests {
         .unwrap();
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader);
         let app = router(app_state(db, queue.clone()));
 
         let response = app
@@ -389,7 +393,7 @@ mod tests {
         let db = test_database().await;
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader);
         let app = router(app_state(db, queue.clone()));
 
         let response = app
@@ -417,7 +421,7 @@ mod tests {
         }
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader.clone());
         let app = router(app_state(db, queue));
 
         enqueue(&app, "album-1").await;
@@ -448,7 +452,7 @@ mod tests {
         }
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader.clone());
         let app = router(app_state(db, queue.clone()));
 
         enqueue(&app, "album-running").await;
@@ -498,7 +502,7 @@ mod tests {
         insert_test_album(&db, "album-2").await;
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader.clone());
         let app = router(app_state(db, queue));
 
         for album_id in ["album-1", "album-2"] {
@@ -553,7 +557,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader);
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader);
         let app = router(app_state(db, queue));
 
         enqueue(&app, "album-1").await;
@@ -594,7 +598,7 @@ mod tests {
         insert_test_album(&db, "album-2").await;
         let downloader = GateDownloader::new();
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader.clone());
         let app = router(app_state(db, queue));
 
         let running = enqueue(&app, "album-1").await;
@@ -677,7 +681,7 @@ mod tests {
             release: Notify::new(),
         });
         let (queue, worker_handle) =
-            DownloadQueue::start(db.clone(), PathBuf::from("/tmp/music"), downloader.clone());
+            DownloadQueue::start(db.clone(), temp_music_dir(), downloader.clone());
         let app = router(app_state(db, queue));
 
         for index in 0..=100 {

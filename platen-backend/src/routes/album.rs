@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use chrono::{Datelike, NaiveDate};
 use futures_util::{StreamExt, TryStreamExt, stream};
+use tokio::fs;
 
 use axum::{
     Json,
@@ -20,6 +21,10 @@ use crate::{
     routes::{artist::dto::Artist, download::dto::DownloadJob},
     services::{self, catalog_utils, downloaders::Downloader, filesystem::album_location},
 };
+
+// Reserved child of the Music directory where downloads stage before
+// publication, so staging never becomes a catalog location.
+pub(crate) const STAGING_DIRECTORY: &str = ".platen-staging";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReleaseDate {
@@ -265,10 +270,14 @@ mod tests {
         async fn download_album(
             &self,
             _album: &album::Model,
-            _destination: &Path,
+            destination: &Path,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             match &self.result {
-                Ok(()) => Ok(()),
+                Ok(()) => {
+                    tokio::fs::create_dir_all(destination).await?;
+                    tokio::fs::write(destination.join("1-01 track.flac"), "audio").await?;
+                    Ok(())
+                }
                 Err(_) => Err(Box::new(TestDownloadError)),
             }
         }
@@ -431,9 +440,10 @@ mod tests {
     async fn successful_download_is_saved() {
         let db = test_database().await;
         insert_test_album(&db, None).await;
+        let music = tempfile::tempdir().unwrap();
         let downloader = TestDownloader { result: Ok(()) };
 
-        download_with(&db, "/tmp/music", &downloader, "album-1")
+        download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1")
             .await
             .unwrap();
 
@@ -449,15 +459,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn successful_download_publishes_through_staging() {
+        let db = test_database().await;
+        insert_test_album(&db, None).await;
+        let music = tempfile::tempdir().unwrap();
+        let downloader = TestDownloader { result: Ok(()) };
+
+        download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1")
+            .await
+            .unwrap();
+
+        let final_dir = music.path().join("Test artist/Test album (2026)");
+        assert!(final_dir.join("1-01 track.flac").exists());
+        // Nothing is left behind in staging, and the staging root is empty.
+        let staging = music.path().join(".platen-staging");
+        let mut entries = tokio::fs::read_dir(&staging).await.unwrap();
+        assert!(entries.next_entry().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn failed_download_is_not_saved() {
         let db = test_database().await;
         insert_test_album(&db, None).await;
+        let music = tempfile::tempdir().unwrap();
         let downloader = TestDownloader {
             result: Err(TestDownloadError),
         };
 
         assert_eq!(
-            download_with(&db, "/tmp/music", &downloader, "album-1").await,
+            download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1").await,
             Err(DownloadError::Transfer)
         );
 
@@ -470,13 +500,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn downloaded_album_conflicts_without_starting_another_download() {
+    async fn failed_download_leaves_no_partial_final_directory_and_cleans_staging() {
         let db = test_database().await;
-        insert_test_album(&db, Some("Test artist/Test album (2026)")).await;
+        insert_test_album(&db, None).await;
+        let music = tempfile::tempdir().unwrap();
+        let downloader = TestDownloader {
+            result: Err(TestDownloadError),
+        };
+
+        download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1")
+            .await
+            .unwrap_err();
+
+        assert!(!music.path().join("Test artist").exists());
+        let staging = music.path().join(".platen-staging");
+        let mut entries = tokio::fs::read_dir(&staging).await.unwrap();
+        assert!(entries.next_entry().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn existing_final_destination_conflicts_even_when_empty() {
+        let db = test_database().await;
+        insert_test_album(&db, None).await;
+        let music = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(music.path().join("Test artist/Test album (2026)"))
+            .await
+            .unwrap();
         let downloader = TestDownloader { result: Ok(()) };
 
         assert_eq!(
-            download_with(&db, "/tmp/music", &downloader, "album-1").await,
+            download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1").await,
+            Err(DownloadError::DestinationExists)
+        );
+
+        let album = album::Entity::find_by_id("album-1")
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(album.relative_path.is_none());
+        // The pre-existing directory is untouched.
+        assert!(music.path().join("Test artist/Test album (2026)").exists());
+    }
+
+    #[tokio::test]
+    async fn leftover_staging_directories_do_not_block_downloads() {
+        let db = test_database().await;
+        insert_test_album(&db, None).await;
+        let music = tempfile::tempdir().unwrap();
+        let staging = music.path().join(".platen-staging");
+        tokio::fs::create_dir_all(staging.join("album-1-leftover"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            staging.join("album-1-leftover/1-01 track.flac"),
+            "stale audio",
+        )
+        .await
+        .unwrap();
+        let downloader = TestDownloader { result: Ok(()) };
+
+        download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1")
+            .await
+            .unwrap();
+
+        let album = album::Entity::find_by_id("album-1")
+            .one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(album.relative_path.is_some());
+    }
+
+    #[tokio::test]
+    async fn downloaded_album_conflicts_without_starting_another_download() {
+        let db = test_database().await;
+        insert_test_album(&db, Some("Test artist/Test album (2026)")).await;
+        let music = tempfile::tempdir().unwrap();
+        let downloader = TestDownloader { result: Ok(()) };
+
+        assert_eq!(
+            download_with(
+                &db,
+                music.path().to_str().unwrap(),
+                &downloader,
+                "album-1"
+            )
+            .await,
             Err(DownloadError::AlreadyDownloaded)
         );
     }
@@ -507,9 +617,16 @@ mod tests {
         .unwrap();
 
         let downloader = TestDownloader { result: Ok(()) };
+        let music = tempfile::tempdir().unwrap();
 
         assert_eq!(
-            download_with(&db, "/tmp/music", &downloader, "album-1").await,
+            download_with(
+                &db,
+                music.path().to_str().unwrap(),
+                &downloader,
+                "album-1"
+            )
+            .await,
             Err(DownloadError::Catalog)
         );
     }
@@ -656,6 +773,8 @@ pub(crate) enum DownloadError {
     Catalog,
     #[error("album is already downloaded")]
     AlreadyDownloaded,
+    #[error("album destination already exists")]
+    DestinationExists,
     #[error("album transfer failed")]
     Transfer,
     #[error("could not save completed download")]
@@ -667,6 +786,7 @@ impl DownloadError {
         match self {
             Self::Catalog => "Could not load album metadata.",
             Self::AlreadyDownloaded => "Album is already downloaded.",
+            Self::DestinationExists => "Album destination already exists.",
             Self::Transfer => "Album download failed.",
             Self::Save => "Could not save the completed download.",
         }
@@ -727,14 +847,49 @@ pub(crate) async fn download_with(
     let relative_path = album_location(&primary.name, &album.title, release_year);
     let destination = music_dir.join(&relative_path);
 
-    downloader
-        .download_album(&album, &destination)
-        .await
-        .map_err(|e| {
+    if destination.exists() {
+        error!(
+            "Download destination {relative_path} already exists on disk"
+        );
+        return Err(DownloadError::DestinationExists);
+    }
+
+    let staging_root = music_dir.join(STAGING_DIRECTORY);
+    fs::create_dir_all(&staging_root).await.map_err(|e| {
+        error!("Could not create staging directory: {e:#?}");
+        DownloadError::Transfer
+    })?;
+    let staging_dir = staging_root.join(format!("{}-{}", album.id, nanoid::nanoid!()));
+    fs::create_dir_all(&staging_dir).await.map_err(|e| {
+        error!("Could not create staging directory for album {}: {e:#?}", album.id);
+        DownloadError::Transfer
+    })?;
+
+    let publish = async {
+        downloader.download_album(&album, &staging_dir).await.map_err(|e| {
             error!("Download failed: {e:#?}");
             DownloadError::Transfer
         })?;
 
+        fs::create_dir_all(&destination).await.map_err(|e| {
+            error!("Could not create parent directory for {relative_path}: {e:#?}");
+            DownloadError::Transfer
+        })?;
+        fs::rename(&staging_dir, &destination).await.map_err(|e| {
+            error!("Could not publish album to {relative_path}: {e:#?}");
+            DownloadError::Transfer
+        })?;
+        Ok::<(), DownloadError>(())
+    }
+    .await;
+
+    if publish.is_err() {
+        let _ = fs::remove_dir_all(&staging_dir).await;
+        return publish;
+    }
+
+    // The location is recorded only after publication succeeded, so database
+    // state never claims an album the filesystem does not hold.
     let mut active: album::ActiveModel = album.into();
     active.relative_path = Set(Some(relative_path));
     active.update(db).await.map_err(|e| {
