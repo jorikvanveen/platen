@@ -65,7 +65,7 @@ mod tests {
 
     use axum::{Router, body::Body, body::to_bytes, http::Request};
     use migration::{Migrator, MigratorTrait};
-    use sea_orm::{ActiveModelTrait, Database, Set};
+    use sea_orm::{ActiveModelTrait, Database, EntityTrait, QueryOrder, Set};
     use tokio::sync::Notify;
     use tower::ServiceExt;
 
@@ -200,7 +200,7 @@ mod tests {
         AppState {
             tidal: Tidal::new(String::new(), String::new()),
             queue,
-            scan: ScanCoordinator::new(MusicDirectory::new(temp_music_dir())),
+            scan: ScanCoordinator::new(MusicDirectory::new(temp_music_dir()), db.clone()),
             db,
         }
     }
@@ -256,6 +256,62 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn run_scan(app: &Router) -> serde_json::Value {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/catalog/scan")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        let started: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(started["phase"], "scanning");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = scan_status(app).await;
+                if status["phase"] == "completed" || status["phase"] == "failed" {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn catalog_rows(
+        db: &DatabaseConnection,
+    ) -> (
+        Vec<album::Model>,
+        Vec<artist::Model>,
+        Vec<album_artist::Model>,
+    ) {
+        (
+            album::Entity::find()
+                .order_by_asc(album::Column::Id)
+                .all(db)
+                .await
+                .unwrap(),
+            artist::Entity::find()
+                .order_by_asc(artist::Column::Id)
+                .all(db)
+                .await
+                .unwrap(),
+            album_artist::Entity::find()
+                .order_by_asc(album_artist::Column::AlbumId)
+                .order_by_asc(album_artist::Column::Position)
+                .all(db)
+                .await
+                .unwrap(),
+        )
     }
 
     async fn wait_for_history(app: &Router, expected: usize) -> serde_json::Value {
@@ -321,6 +377,26 @@ mod tests {
     #[tokio::test]
     async fn catalog_scan_runs_in_the_background_and_retains_its_summary() {
         let db = test_database().await;
+        insert_test_album(&db, "locked").await;
+        album::ActiveModel {
+            id: Set("locked".to_owned()),
+            title: Set("Album (With Notes)".to_owned()),
+            release_year: Set(2025),
+            relative_path: Set(Some("Old/Location".to_owned())),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
+        artist::ActiveModel {
+            id: Set("artist-locked".to_owned()),
+            name: Set("Primary Artist".to_owned()),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
+        let before = catalog_rows(&db).await;
         let music = tempfile::tempdir().unwrap();
         let album = music
             .path()
@@ -347,8 +423,8 @@ mod tests {
         let app = router(AppState {
             tidal: Tidal::new(String::new(), String::new()),
             queue,
-            scan: ScanCoordinator::new(music_directory.clone()),
-            db,
+            scan: ScanCoordinator::new(music_directory.clone(), db.clone()),
+            db: db.clone(),
         });
 
         assert_eq!(scan_status(&app).await, serde_json::Value::Null);
@@ -380,6 +456,9 @@ mod tests {
         let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
         let active: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(active["phase"], "scanning");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(scan_status(&app).await["phase"], "scanning");
+        assert_eq!(catalog_rows(&db).await, before);
 
         drop(guard);
         let completed = tokio::time::timeout(Duration::from_secs(5), async {
@@ -398,8 +477,183 @@ mod tests {
         assert_eq!(completed["summary"]["candidates_total"], 1);
         assert_eq!(completed["summary"]["skipped_directories"], 1);
         assert_eq!(completed["summary"]["filesystem_errors"], 0);
+        assert_eq!(completed["summary"]["locations_changed"], 1);
+        let mut expected = before;
+        expected.0[0].relative_path = Some("Primary Artist/Album (With Notes) (2025)".to_owned());
+        assert_eq!(catalog_rows(&db).await, expected);
 
         assert_eq!(scan_status(&app).await, completed);
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn catalog_scan_reconciles_locations_without_changing_metadata_and_is_idempotent() {
+        let db = test_database().await;
+        let music = tempfile::tempdir().unwrap();
+        for (id, path) in [
+            ("attach", None),
+            ("move", Some("Old/Move")),
+            ("keep", Some("Unrelated artist/Old title (1999)")),
+            ("clear", Some("Test artist/Album clear")),
+            ("duplicate-new", None),
+            ("duplicate-stale", Some("Old/Duplicate")),
+            ("duplicate-kept", Some("Test artist/Album duplicate-kept")),
+        ] {
+            insert_test_album(&db, id).await;
+            album::ActiveModel {
+                id: Set(id.to_owned()),
+                relative_path: Set(path.map(str::to_owned)),
+                release_month: Set(Some(6)),
+                release_day: Set(Some(12)),
+                cover_url: Set(Some(format!("https://example.test/{id}/cover"))),
+                ..Default::default()
+            }
+            .update(&db)
+            .await
+            .unwrap();
+        }
+        artist::ActiveModel {
+            id: Set("a-guest".to_owned()),
+            name: Set("Guest artist".to_owned()),
+            profile_image_url: Set(Some("https://example.test/guest".to_owned())),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        album_artist::ActiveModel {
+            album_id: Set("attach".to_owned()),
+            artist_id: Set("a-guest".to_owned()),
+            position: Set(1),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        for path in [
+            "Test artist/Album attach (2026)",
+            "Test artist/Album move",
+            "Unrelated artist/Old title (1999)",
+            "Test artist/Album duplicate-new",
+            "Test artist/Album duplicate-new (2026)",
+            "Test artist/Album duplicate-stale",
+            "Test artist/Album duplicate-stale (2026)",
+            "Test artist/Album duplicate-kept",
+            "Test artist/Album duplicate-kept (2026)",
+        ] {
+            let disc = music.path().join(path).join("Disc 1");
+            tokio::fs::create_dir_all(&disc).await.unwrap();
+            tokio::fs::write(disc.join("track.OpUs"), b"audio")
+                .await
+                .unwrap();
+        }
+        let before = catalog_rows(&db).await;
+        let music_directory = MusicDirectory::new(music.path().to_owned());
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
+        let app = router(AppState {
+            tidal: Tidal::new(String::new(), String::new()),
+            queue,
+            scan: ScanCoordinator::new(music_directory, db.clone()),
+            db: db.clone(),
+        });
+
+        let completed = run_scan(&app).await;
+        assert_eq!(completed["phase"], "completed");
+        assert_eq!(completed["failure_reason"], serde_json::Value::Null);
+        assert_eq!(
+            completed["summary"],
+            serde_json::json!({
+                "album_directories_found": 9,
+                "candidates_processed": 9,
+                "candidates_total": 9,
+                "albums_imported": 0,
+                "locations_attached": 1,
+                "locations_changed": 1,
+                "unchanged_locations": 2,
+                "locations_cleared": 2,
+                "unmatched_candidates": 0,
+                "ambiguous_matches": 0,
+                "duplicate_locations": 6,
+                "skipped_directories": 6,
+                "failures": 0,
+                "filesystem_errors": 0
+            })
+        );
+        assert_eq!(scan_status(&app).await, completed);
+        let after = catalog_rows(&db).await;
+        let mut expected_albums = before.0;
+        for album in &mut expected_albums {
+            album.relative_path = match album.id.as_str() {
+                "attach" => Some("Test artist/Album attach (2026)".to_owned()),
+                "move" => Some("Test artist/Album move".to_owned()),
+                "clear" | "duplicate-stale" => None,
+                _ => album.relative_path.clone(),
+            };
+        }
+        assert_eq!(after, (expected_albums, before.1, before.2));
+        let attach_credits: Vec<_> = after
+            .2
+            .iter()
+            .filter(|credit| credit.album_id == "attach")
+            .map(|credit| (credit.artist_id.as_str(), credit.position))
+            .collect();
+        assert_eq!(attach_credits, [("artist-attach", 0), ("a-guest", 1)]);
+
+        let second = run_scan(&app).await;
+        let mut expected = completed;
+        expected["summary"]["locations_attached"] = 0.into();
+        expected["summary"]["locations_changed"] = 0.into();
+        expected["summary"]["locations_cleared"] = 0.into();
+        expected["summary"]["unchanged_locations"] = 4.into();
+        assert_eq!(second, expected);
+        assert_eq!(catalog_rows(&db).await, after);
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn catalog_scan_clears_paths_when_the_music_root_is_missing_even_with_failed_status() {
+        let db = test_database().await;
+        for id in ["missing", "unattached"] {
+            insert_test_album(&db, id).await;
+        }
+        album::ActiveModel {
+            id: Set("missing".to_owned()),
+            relative_path: Set(Some("Test artist/Album missing".to_owned())),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
+        let before = catalog_rows(&db).await;
+        let music = tempfile::tempdir().unwrap();
+        let music_directory = MusicDirectory::new(music.path().join("missing-root"));
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
+        let app = router(AppState {
+            tidal: Tidal::new(String::new(), String::new()),
+            queue,
+            scan: ScanCoordinator::new(music_directory, db.clone()),
+            db: db.clone(),
+        });
+
+        let failed = run_scan(&app).await;
+        assert_eq!(failed["phase"], "failed");
+        assert_eq!(
+            failed["failure_reason"],
+            "Could not scan the Music directory."
+        );
+        assert_eq!(failed["summary"]["locations_cleared"], 1);
+        assert_eq!(failed["summary"]["filesystem_errors"], 1);
+        assert_eq!(failed["summary"]["failures"], 1);
+        assert_eq!(failed["summary"]["candidates_total"], 0);
+        assert_eq!(failed["summary"]["candidates_processed"], 0);
+        assert_eq!(scan_status(&app).await, failed);
+        let mut expected = before;
+        for album in &mut expected.0 {
+            album.relative_path = None;
+        }
+        assert_eq!(catalog_rows(&db).await, expected);
         worker_handle.abort();
         let _ = worker_handle.await;
     }

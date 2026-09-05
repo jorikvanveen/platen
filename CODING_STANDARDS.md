@@ -5,4 +5,5 @@
 - If a comment is present, it should answer a "why" question. Never a "what" or "how" question.
 - When mapping one struct to another, if possible prefer implementing `From` over writing a special function or doing the mapping inline.
   If the mapping requires more than one argument, prefer a helper function over a `From` impl on a tuple
+- Prefer slightly longer, descriptive variable names over terse or generic ones. Name what a value represents, and for maps, make the key clear: `candidates_by_album_id` rather than `groups`. Avoid extra words that add no meaning.
 - In frontend code, prefer <style> tags over a big app.css

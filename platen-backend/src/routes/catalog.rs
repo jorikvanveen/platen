@@ -41,20 +41,20 @@ pub mod dto {
     #[derive(Debug, PartialEq, Eq, Serialize, TS)]
     #[ts(export)]
     pub struct CatalogScanSummary {
-        pub album_directories_found: u32,
-        pub candidates_processed: u32,
-        pub candidates_total: u32,
-        pub albums_imported: u32,
-        pub locations_attached: u32,
-        pub locations_changed: u32,
-        pub unchanged_locations: u32,
-        pub locations_cleared: u32,
-        pub unmatched_candidates: u32,
-        pub ambiguous_matches: u32,
-        pub duplicate_locations: u32,
-        pub skipped_directories: u32,
-        pub failures: u32,
-        pub filesystem_errors: u32,
+        pub album_directories_found: usize,
+        pub candidates_processed: usize,
+        pub candidates_total: usize,
+        pub albums_imported: usize,
+        pub locations_attached: usize,
+        pub locations_changed: usize,
+        pub unchanged_locations: usize,
+        pub locations_cleared: usize,
+        pub unmatched_candidates: usize,
+        pub ambiguous_matches: usize,
+        pub duplicate_locations: usize,
+        pub skipped_directories: usize,
+        pub failures: usize,
+        pub filesystem_errors: usize,
     }
 
     impl From<ScanSummary> for CatalogScanSummary {

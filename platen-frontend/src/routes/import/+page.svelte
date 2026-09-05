@@ -65,7 +65,12 @@
 			? [
 					["Album directories", scan.summary.album_directories_found],
 					["Candidates processed", `${scan.summary.candidates_processed} / ${scan.summary.candidates_total}`],
-					["Skipped directories", scan.summary.skipped_directories],
+					["Locations attached", scan.summary.locations_attached],
+										["Locations changed", scan.summary.locations_changed],
+										["Locations unchanged", scan.summary.unchanged_locations],
+										["Locations cleared", scan.summary.locations_cleared],
+										["Duplicate locations skipped", scan.summary.duplicate_locations],
+										["Skipped directories", scan.summary.skipped_directories],
 					["Filesystem errors", scan.summary.filesystem_errors],
 					["Failures", scan.summary.failures],
 				]
@@ -75,7 +80,7 @@
 
 <PageHeading
 	title="Import music"
-	description="Scan the configured Music directory for album folders. This scan does not change the Catalog yet."
+	description="Scan the configured Music directory to update locations for existing Catalog albums. Missing or inaccessible audio clears its stored location. Files and album metadata stay untouched."
 />
 
 <section class="status" aria-live="polite">

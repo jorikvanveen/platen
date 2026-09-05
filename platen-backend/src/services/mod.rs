@@ -1,3 +1,4 @@
+mod catalog_reconciliation;
 pub(crate) mod catalog_scan;
 pub mod catalog_utils;
 pub mod download_queue;

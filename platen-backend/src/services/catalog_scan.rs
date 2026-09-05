@@ -4,7 +4,10 @@ use std::{
     sync::Arc,
 };
 
+use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
+
+use super::catalog_reconciliation::reconcile;
 
 use crate::{routes::album::STAGING_DIRECTORY, services::music_directory::MusicDirectory};
 
@@ -25,20 +28,20 @@ impl ScanPhase {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ScanSummary {
-    pub(crate) album_directories_found: u32,
-    pub(crate) candidates_processed: u32,
-    pub(crate) candidates_total: u32,
-    pub(crate) albums_imported: u32,
-    pub(crate) locations_attached: u32,
-    pub(crate) locations_changed: u32,
-    pub(crate) unchanged_locations: u32,
-    pub(crate) locations_cleared: u32,
-    pub(crate) unmatched_candidates: u32,
-    pub(crate) ambiguous_matches: u32,
-    pub(crate) duplicate_locations: u32,
-    pub(crate) skipped_directories: u32,
-    pub(crate) failures: u32,
-    pub(crate) filesystem_errors: u32,
+    pub(crate) album_directories_found: usize,
+    pub(crate) candidates_processed: usize,
+    pub(crate) candidates_total: usize,
+    pub(crate) albums_imported: usize,
+    pub(crate) locations_attached: usize,
+    pub(crate) locations_changed: usize,
+    pub(crate) unchanged_locations: usize,
+    pub(crate) locations_cleared: usize,
+    pub(crate) unmatched_candidates: usize,
+    pub(crate) ambiguous_matches: usize,
+    pub(crate) duplicate_locations: usize,
+    pub(crate) skipped_directories: usize,
+    pub(crate) failures: usize,
+    pub(crate) filesystem_errors: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,6 +57,43 @@ pub(crate) struct AlbumCandidate {
     pub(crate) title: String,
     pub(crate) release_year: Option<i32>,
     pub(crate) relative_path: String,
+}
+
+#[derive(Default)]
+pub(super) struct DiscoveryReport {
+    pub(super) candidates: Vec<AlbumCandidate>,
+    pub(super) diagnostics: Vec<FilesystemDiagnostic>,
+    pub(super) root_failed: bool,
+    pub(super) skipped_directories: usize,
+}
+
+impl From<&DiscoveryReport> for ScanSummary {
+    fn from(report: &DiscoveryReport) -> Self {
+        Self {
+            album_directories_found: report.candidates.len(),
+            candidates_total: report.candidates.len(),
+            filesystem_errors: report.diagnostics.len(),
+            skipped_directories: report.skipped_directories,
+            ..Default::default()
+        }
+    }
+}
+
+pub(super) struct FilesystemDiagnostic {
+    pub(super) reason: &'static str,
+    pub(super) path: PathBuf,
+    pub(super) os_error: std::io::Error,
+}
+
+impl FilesystemDiagnostic {
+    fn log(&self) {
+        tracing::error!(
+            reason = self.reason,
+            path = %self.path.display(),
+            os_error = %self.os_error,
+            "Filesystem error during Music scan"
+        );
+    }
 }
 
 enum ScannedEntryKind {
@@ -101,7 +141,11 @@ impl ActiveScan {
         )
     }
 
-    async fn complete(self, candidate_count: u32) {
+    async fn publish_summary(&self, summary: &ScanSummary) {
+        self.status.snapshot.lock().await.summary = summary.clone();
+    }
+
+    async fn complete(self, candidate_count: usize) {
         let mut snapshot = self.status.snapshot.lock().await;
         snapshot.phase = ScanPhase::Completed;
         snapshot.summary.candidates_processed = candidate_count;
@@ -111,40 +155,23 @@ impl ActiveScan {
     async fn fail(self, reason: &str) {
         let mut snapshot = self.status.snapshot.lock().await;
         snapshot.phase = ScanPhase::Failed;
-        snapshot.summary.failures = 1;
+        snapshot.summary.failures = snapshot.summary.failures.saturating_add(1);
         snapshot.failure_reason = Some(reason.to_owned());
-    }
-
-    async fn record_filesystem_error(
-        &self,
-        reason: &'static str,
-        path: &Path,
-        os_error: &std::io::Error,
-    ) {
-        {
-            let mut snapshot = self.status.snapshot.lock().await;
-            snapshot.summary.filesystem_errors =
-                snapshot.summary.filesystem_errors.saturating_add(1);
-        }
-        tracing::error!(
-            reason,
-            path = %path.display(),
-            os_error = %os_error,
-            "Filesystem error during Music scan"
-        );
     }
 }
 
 #[derive(Clone)]
 pub(crate) struct ScanCoordinator {
     music_directory: MusicDirectory,
+    db: DatabaseConnection,
     latest_scan: Arc<Mutex<Option<ScanHandle>>>,
 }
 
 impl ScanCoordinator {
-    pub(crate) fn new(music_directory: MusicDirectory) -> Self {
+    pub(crate) fn new(music_directory: MusicDirectory, db: DatabaseConnection) -> Self {
         Self {
             music_directory,
+            db,
             latest_scan: Arc::new(Mutex::new(None)),
         }
     }
@@ -174,47 +201,70 @@ impl ScanCoordinator {
     }
 
     async fn run(self, scan: ActiveScan) {
-        let result = {
+        let (report, result) = {
             let _music_dir_guard = self.music_directory.lock().await;
-            discover_album_candidates(self.music_directory.path(), &scan).await
+            let report = discover_album_candidates(self.music_directory.path(), &scan).await;
+            let mut summary = ScanSummary::from(&report);
+            scan.publish_summary(&summary).await;
+            let result = reconcile(&self.db, &report, &mut summary).await;
+            scan.publish_summary(&summary).await;
+            (report, result)
         };
 
-        match result {
-            Ok(candidates) => {
-                let candidate_count = u32::try_from(candidates.len()).unwrap_or(u32::MAX);
-                scan.complete(candidate_count).await;
-            }
-            Err(()) => scan.fail("Could not scan the Music directory.").await,
+        if let Err(error) = result {
+            tracing::error!(reason = "catalog_reconciliation", path = %self.music_directory.path().display(), %error, "Could not reconcile Catalog locations");
+            scan.fail("Could not reconcile Catalog locations.").await;
+        } else if report.root_failed {
+            scan.fail("Could not scan the Music directory.").await;
+        } else {
+            scan.complete(report.candidates.len()).await;
         }
     }
 }
 
-async fn discover_album_candidates(
-    configured_root: &Path,
-    scan: &ActiveScan,
-) -> Result<Vec<AlbumCandidate>, ()> {
+async fn discover_album_candidates(configured_root: &Path, scan: &ActiveScan) -> DiscoveryReport {
     let music_root = match tokio::fs::canonicalize(configured_root).await {
         Ok(root) => root,
         Err(error) => {
-            scan.record_filesystem_error("resolve_music_root", configured_root, &error)
-                .await;
-            return Err(());
+            let diagnostic = FilesystemDiagnostic {
+                reason: "resolve_music_root",
+                path: configured_root.to_owned(),
+                os_error: error,
+            };
+            diagnostic.log();
+            return DiscoveryReport {
+                diagnostics: vec![diagnostic],
+                root_failed: true,
+                ..Default::default()
+            };
         }
     };
-    Scanner { music_root, scan }.discover().await
+    let mut scanner = Scanner {
+        music_root,
+        scan,
+        diagnostics: Vec::new(),
+        skipped_directories: 0,
+    };
+    let result = scanner.discover().await;
+    DiscoveryReport {
+        root_failed: result.is_err(),
+        candidates: result.unwrap_or_default(),
+        diagnostics: scanner.diagnostics,
+        skipped_directories: scanner.skipped_directories,
+    }
 }
 
 struct Scanner<'a> {
     music_root: PathBuf,
     scan: &'a ActiveScan,
+    diagnostics: Vec<FilesystemDiagnostic>,
+    skipped_directories: usize,
 }
 
 impl Scanner<'_> {
-    async fn discover(&self) -> Result<Vec<AlbumCandidate>, ()> {
-        let artist_entries = self
-            .list_directory_entries(&self.music_root)
-            .await
-            .ok_or(())?;
+    async fn discover(&mut self) -> Result<Vec<AlbumCandidate>, ()> {
+        let music_root = self.music_root.clone();
+        let artist_entries = self.list_directory_entries(&music_root).await.ok_or(())?;
         let mut candidates = Vec::new();
 
         for artist_entry in artist_entries {
@@ -261,8 +311,7 @@ impl Scanner<'_> {
                     relative_path,
                 });
                 let mut snapshot = self.scan.status.snapshot.lock().await;
-                snapshot.summary.album_directories_found =
-                    snapshot.summary.album_directories_found.saturating_add(1);
+                snapshot.summary.album_directories_found = candidates.len();
             }
         }
 
@@ -270,15 +319,13 @@ impl Scanner<'_> {
     }
 
     async fn list_directory_entries(
-        &self,
+        &mut self,
         absolute_path: &Path,
     ) -> Option<Vec<tokio::fs::DirEntry>> {
         let mut directory = match tokio::fs::read_dir(absolute_path).await {
             Ok(directory) => directory,
             Err(error) => {
-                self.scan
-                    .record_filesystem_error("read_directory", absolute_path, &error)
-                    .await;
+                self.record_filesystem_error("read_directory", absolute_path, error);
                 return None;
             }
         };
@@ -288,22 +335,18 @@ impl Scanner<'_> {
                 Ok(Some(entry)) => entries.push(entry),
                 Ok(None) => return Some(entries),
                 Err(error) => {
-                    self.scan
-                        .record_filesystem_error("read_directory_entry", absolute_path, &error)
-                        .await;
+                    self.record_filesystem_error("read_directory_entry", absolute_path, error);
                     return Some(entries);
                 }
             }
         }
     }
 
-    async fn classify_entry(&self, entry: &tokio::fs::DirEntry) -> Option<ScannedEntryKind> {
+    async fn classify_entry(&mut self, entry: &tokio::fs::DirEntry) -> Option<ScannedEntryKind> {
         let file_type = match entry.file_type().await {
             Ok(file_type) => file_type,
             Err(error) => {
-                self.scan
-                    .record_filesystem_error("read_entry_type", &entry.path(), &error)
-                    .await;
+                self.record_filesystem_error("read_entry_type", &entry.path(), error);
                 return None;
             }
         };
@@ -325,7 +368,7 @@ impl Scanner<'_> {
         Some(ScannedEntryKind::Other)
     }
 
-    async fn contains_audio_file(&self, album_root: &Path) -> bool {
+    async fn contains_audio_file(&mut self, album_root: &Path) -> bool {
         let mut pending = VecDeque::from([album_root.to_owned()]);
         let mut found_audio = false;
         while let Some(absolute) = pending.pop_front() {
@@ -350,11 +393,26 @@ impl Scanner<'_> {
         found_audio
     }
 
-    async fn record_skipped(&self, reason: &'static str, path: &Path) {
+    fn record_filesystem_error(
+        &mut self,
+        reason: &'static str,
+        path: &Path,
+        os_error: std::io::Error,
+    ) {
+        let diagnostic = FilesystemDiagnostic {
+            reason,
+            path: path.to_owned(),
+            os_error,
+        };
+        diagnostic.log();
+        self.diagnostics.push(diagnostic);
+    }
+
+    async fn record_skipped(&mut self, reason: &'static str, path: &Path) {
+        self.skipped_directories = self.skipped_directories.saturating_add(1);
         {
             let mut snapshot = self.scan.status.snapshot.lock().await;
-            snapshot.summary.skipped_directories =
-                snapshot.summary.skipped_directories.saturating_add(1);
+            snapshot.summary.skipped_directories = self.skipped_directories;
         }
         tracing::warn!(
             reason,
@@ -403,11 +461,72 @@ mod tests {
     }
 
     async fn discover(root: &Path) -> Vec<AlbumCandidate> {
-        discover_album_candidates(root, &test_scan()).await.unwrap()
+        discover_album_candidates(root, &test_scan())
+            .await
+            .candidates
     }
 
     async fn summary(scan: &ActiveScan) -> ScanSummary {
         scan.status.snapshot.lock().await.summary.clone()
+    }
+
+    #[tokio::test]
+    async fn discovery_owns_counts_and_publishes_progress_without_reading_it_back() {
+        let music = tempfile::tempdir().unwrap();
+        let album = music.path().join("Artist/Title (2024)");
+        tokio::fs::create_dir_all(&album).await.unwrap();
+        tokio::fs::write(album.join("track.flac"), b"audio")
+            .await
+            .unwrap();
+        tokio::fs::create_dir_all(music.path().join("Artist/Empty"))
+            .await
+            .unwrap();
+        let scan = test_scan();
+        scan.publish_summary(&ScanSummary {
+            album_directories_found: 99,
+            skipped_directories: 99,
+            locations_attached: 99,
+            ..Default::default()
+        })
+        .await;
+
+        let report = discover_album_candidates(music.path(), &scan).await;
+        let discovered = ScanSummary::from(&report);
+        assert_eq!(
+            discovered,
+            ScanSummary {
+                album_directories_found: 1,
+                candidates_total: 1,
+                skipped_directories: 1,
+                ..Default::default()
+            }
+        );
+        let progress = summary(&scan).await;
+        assert_eq!(progress.album_directories_found, 1);
+        assert_eq!(progress.skipped_directories, 1);
+
+        scan.publish_summary(&discovered).await;
+        assert_eq!(summary(&scan).await, discovered);
+    }
+
+    #[test]
+    fn discovery_summary_includes_root_failure_diagnostics() {
+        let report = DiscoveryReport {
+            diagnostics: vec![FilesystemDiagnostic {
+                reason: "resolve_music_root",
+                path: "missing".into(),
+                os_error: std::io::ErrorKind::NotFound.into(),
+            }],
+            root_failed: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            ScanSummary::from(&report),
+            ScanSummary {
+                filesystem_errors: 1,
+                ..Default::default()
+            }
+        );
     }
 
     #[tokio::test]
@@ -469,11 +588,9 @@ mod tests {
             .unwrap();
 
         let scan = test_scan();
-        let candidates = discover_album_candidates(music.path(), &scan)
-            .await
-            .unwrap();
+        let report = discover_album_candidates(music.path(), &scan).await;
 
-        assert!(candidates.is_empty());
+        assert!(report.candidates.is_empty());
         assert_eq!(summary(&scan).await.skipped_directories, 3);
     }
 
@@ -500,7 +617,9 @@ mod tests {
         symlink(&real, &root_link).unwrap();
 
         let scan = test_scan();
-        let candidates = discover_album_candidates(&root_link, &scan).await.unwrap();
+        let candidates = discover_album_candidates(&root_link, &scan)
+            .await
+            .candidates;
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].title, "Real album");
@@ -519,11 +638,9 @@ mod tests {
             .unwrap();
 
         let scan = test_scan();
-        let candidates = discover_album_candidates(music.path(), &scan)
-            .await
-            .unwrap();
+        let report = discover_album_candidates(music.path(), &scan).await;
 
-        assert!(candidates.is_empty());
+        assert!(report.candidates.is_empty());
         assert_eq!(summary(&scan).await.skipped_directories, 1);
     }
 
@@ -532,14 +649,172 @@ mod tests {
         let root = tempfile::tempdir().unwrap().path().join("missing");
         let scan = test_scan();
 
-        assert!(discover_album_candidates(&root, &scan).await.is_err());
-        assert_eq!(summary(&scan).await.filesystem_errors, 1);
+        let report = discover_album_candidates(&root, &scan).await;
+        assert!(report.root_failed);
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].path, root);
+    }
+
+    #[tokio::test]
+    async fn coordinator_waits_for_music_lock_and_completes_after_reconciliation() {
+        use crate::entity::{album, album_artist, artist};
+        use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+        let root = tempfile::tempdir().unwrap();
+        let location = root.path().join("Artist/Title (2024)");
+        tokio::fs::create_dir_all(&location).await.unwrap();
+        tokio::fs::write(location.join("track.flac"), b"audio")
+            .await
+            .unwrap();
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        <migration::Migrator as migration::MigratorTrait>::up(&db, None)
+            .await
+            .unwrap();
+        album::ActiveModel {
+            id: Set("album".into()),
+            title: Set("Title".into()),
+            release_year: Set(2024),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        artist::ActiveModel {
+            id: Set("artist".into()),
+            name: Set("Artist".into()),
+            profile_image_url: Set(None),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        album_artist::ActiveModel {
+            album_id: Set("album".into()),
+            artist_id: Set("artist".into()),
+            position: Set(0),
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        let music = MusicDirectory::new(root.path().to_owned());
+        let guard = music.lock().await;
+        let coordinator = ScanCoordinator::new(music.clone(), db.clone());
+        coordinator.start().await.unwrap();
+        assert!(coordinator.start().await.is_err());
+        tokio::task::yield_now().await;
+        assert_eq!(
+            coordinator
+                .snapshot()
+                .await
+                .unwrap()
+                .summary
+                .album_directories_found,
+            0
+        );
+        assert_eq!(
+            album::Entity::find_by_id("album")
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap()
+                .relative_path,
+            None
+        );
+        drop(guard);
+        let completed = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let snapshot = coordinator.snapshot().await.unwrap();
+                if !snapshot.phase.is_active() {
+                    return snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(completed.phase, ScanPhase::Completed);
+        assert_eq!(completed.summary.locations_attached, 1);
+        assert_eq!(completed.summary.candidates_processed, 1);
+        assert_eq!(
+            album::Entity::find_by_id("album")
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap()
+                .relative_path
+                .as_deref(),
+            Some("Artist/Title (2024)")
+        );
+        let _guard = tokio::time::timeout(std::time::Duration::from_secs(1), music.lock())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn unreadable_root_report_clears_locations_before_failure() {
+        use crate::entity::album;
+        use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("not-a-directory");
+        tokio::fs::write(&root, b"file").await.unwrap();
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        <migration::Migrator as migration::MigratorTrait>::up(&db, None)
+            .await
+            .unwrap();
+        album::ActiveModel {
+            id: Set("stale".into()),
+            title: Set("Stale".into()),
+            release_year: Set(2024),
+            relative_path: Set(Some("Artist/Stale".into())),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        let scan = test_scan();
+        let report = discover_album_candidates(&root, &scan).await;
+        assert!(report.root_failed);
+        assert_eq!(
+            report.diagnostics[0].path,
+            tokio::fs::canonicalize(&root).await.unwrap()
+        );
+        let coordinator = ScanCoordinator::new(MusicDirectory::new(root), db.clone());
+        let (scan, handle, _) = ActiveScan::new();
+        coordinator.run(scan).await;
+        let snapshot = handle.snapshot().await;
+        assert_eq!(snapshot.phase, ScanPhase::Failed);
+        assert_eq!(snapshot.summary.locations_cleared, 1);
+        assert_eq!(snapshot.summary.filesystem_errors, 1);
+        assert_eq!(
+            album::Entity::find_by_id("stale")
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap()
+                .relative_path,
+            None
+        );
     }
 
     #[tokio::test]
     async fn coordinator_retains_a_terminal_failure() {
         let root = tempfile::tempdir().unwrap().path().join("missing");
-        let coordinator = ScanCoordinator::new(MusicDirectory::new(root));
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        <migration::Migrator as migration::MigratorTrait>::up(&db, None)
+            .await
+            .unwrap();
+        use crate::entity::album;
+        use sea_orm::{ActiveModelTrait, EntityTrait, Set};
+        album::ActiveModel {
+            id: Set("stale".into()),
+            title: Set("Stale".into()),
+            release_year: Set(2024),
+            relative_path: Set(Some("Artist/Stale".into())),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await
+        .unwrap();
+        let music_directory = MusicDirectory::new(root);
+        let coordinator = ScanCoordinator::new(music_directory.clone(), db.clone());
 
         assert_eq!(
             coordinator.start().await.unwrap().phase,
@@ -559,6 +834,20 @@ mod tests {
 
         assert_eq!(failed.summary.failures, 1);
         assert_eq!(failed.summary.filesystem_errors, 1);
+        assert_eq!(failed.summary.locations_cleared, 1);
+        assert_eq!(
+            album::Entity::find_by_id("stale")
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap()
+                .relative_path,
+            None
+        );
         assert_eq!(coordinator.snapshot().await, Some(failed));
+        let _guard =
+            tokio::time::timeout(std::time::Duration::from_secs(1), music_directory.lock())
+                .await
+                .unwrap();
     }
 }

@@ -47,7 +47,7 @@ async fn main() -> color_eyre::Result<()> {
     let music_directory = MusicDirectory::new(PathBuf::from(&config.music_dir));
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), Arc::new(antra));
-    let scan = ScanCoordinator::new(music_directory);
+    let scan = ScanCoordinator::new(music_directory, db.clone());
     let app = router(AppState {
         tidal,
         queue,
