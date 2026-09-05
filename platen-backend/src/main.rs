@@ -8,7 +8,10 @@ use tracing_subscriber::filter::EnvFilter;
 use crate::{
     app::{AppState, router},
     config::Config,
-    services::{download_queue::DownloadQueue, downloaders::antra::Antra, tidal::Tidal},
+    services::{
+        catalog_scan::ScanCoordinator, download_queue::DownloadQueue, downloaders::antra::Antra,
+        music_directory::MusicDirectory, tidal::Tidal,
+    },
 };
 
 mod app;
@@ -41,12 +44,16 @@ async fn main() -> color_eyre::Result<()> {
     let db: DatabaseConnection = Database::connect(&config.database_url).await?;
     Migrator::up(&db, None).await?;
 
-    let (queue, worker_handle) = DownloadQueue::start(
-        db.clone(),
-        PathBuf::from(&config.music_dir),
-        Arc::new(antra),
-    );
-    let app = router(AppState { tidal, queue, db });
+    let music_directory = MusicDirectory::new(PathBuf::from(&config.music_dir));
+    let (queue, worker_handle) =
+        DownloadQueue::start(db.clone(), music_directory.clone(), Arc::new(antra));
+    let scan = ScanCoordinator::new(music_directory);
+    let app = router(AppState {
+        tidal,
+        queue,
+        scan,
+        db,
+    });
     let listener = TcpListener::bind(&config.bind_address).await?;
 
     let server_result = tokio::select! {

@@ -580,13 +580,7 @@ mod tests {
         let downloader = TestDownloader { result: Ok(()) };
 
         assert_eq!(
-            download_with(
-                &db,
-                music.path().to_str().unwrap(),
-                &downloader,
-                "album-1"
-            )
-            .await,
+            download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1").await,
             Err(DownloadError::AlreadyDownloaded)
         );
     }
@@ -620,13 +614,7 @@ mod tests {
         let music = tempfile::tempdir().unwrap();
 
         assert_eq!(
-            download_with(
-                &db,
-                music.path().to_str().unwrap(),
-                &downloader,
-                "album-1"
-            )
-            .await,
+            download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1").await,
             Err(DownloadError::Catalog)
         );
     }
@@ -848,9 +836,7 @@ pub(crate) async fn download_with(
     let destination = music_dir.join(&relative_path);
 
     if destination.exists() {
-        error!(
-            "Download destination {relative_path} already exists on disk"
-        );
+        error!("Download destination {relative_path} already exists on disk");
         return Err(DownloadError::DestinationExists);
     }
 
@@ -861,15 +847,21 @@ pub(crate) async fn download_with(
     })?;
     let staging_dir = staging_root.join(format!("{}-{}", album.id, nanoid::nanoid!()));
     fs::create_dir_all(&staging_dir).await.map_err(|e| {
-        error!("Could not create staging directory for album {}: {e:#?}", album.id);
+        error!(
+            "Could not create staging directory for album {}: {e:#?}",
+            album.id
+        );
         DownloadError::Transfer
     })?;
 
     let publish = async {
-        downloader.download_album(&album, &staging_dir).await.map_err(|e| {
-            error!("Download failed: {e:#?}");
-            DownloadError::Transfer
-        })?;
+        downloader
+            .download_album(&album, &staging_dir)
+            .await
+            .map_err(|e| {
+                error!("Download failed: {e:#?}");
+                DownloadError::Transfer
+            })?;
 
         fs::create_dir_all(&destination).await.map_err(|e| {
             error!("Could not create parent directory for {relative_path}: {e:#?}");

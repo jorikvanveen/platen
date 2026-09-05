@@ -1,11 +1,14 @@
-use std::{collections::VecDeque, path::PathBuf, sync::Arc};
+use std::{collections::VecDeque, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use nanoid::nanoid;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 
-use crate::{routes::album as album_route, services::downloaders::Downloader};
+use crate::{
+    routes::album as album_route,
+    services::{downloaders::Downloader, music_directory::MusicDirectory},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobStatus {
@@ -50,43 +53,10 @@ pub struct DownloadQueue {
     sender: mpsc::UnboundedSender<String>,
 }
 
-const HISTORY_LIMIT: usize = 100;
-const QUEUED_JOB_LIMIT: usize = 1_000;
-
-struct QueueState {
-    active: Vec<JobRecord>,
-    history: VecDeque<JobRecord>,
-}
-
-impl QueueState {
-    fn finish(
-        &mut self,
-        index: usize,
-        status: JobStatus,
-        failure_reason: Option<String>,
-    ) -> JobRecord {
-        let mut job = self.active.remove(index);
-        job.status = status;
-        job.finished_at = Some(Utc::now());
-        job.failure_reason = failure_reason;
-        self.history.push_front(job.clone());
-        self.history.truncate(HISTORY_LIMIT);
-        job
-    }
-}
-
-struct DownloadWorker {
-    queue: DownloadQueue,
-    receiver: mpsc::UnboundedReceiver<String>,
-    db: sea_orm::DatabaseConnection,
-    music_dir: PathBuf,
-    downloader: Arc<dyn Downloader>,
-}
-
 impl DownloadQueue {
     pub fn start(
         db: sea_orm::DatabaseConnection,
-        music_dir: PathBuf,
+        music_directory: MusicDirectory,
         downloader: Arc<dyn Downloader>,
     ) -> (Self, tokio::task::JoinHandle<()>) {
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -101,7 +71,7 @@ impl DownloadQueue {
             queue: queue.clone(),
             receiver,
             db,
-            music_dir,
+            music_directory,
             downloader,
         };
         (queue, tokio::spawn(worker.run()))
@@ -179,6 +149,39 @@ impl DownloadQueue {
     }
 }
 
+const HISTORY_LIMIT: usize = 100;
+const QUEUED_JOB_LIMIT: usize = 1_000;
+
+struct QueueState {
+    active: Vec<JobRecord>,
+    history: VecDeque<JobRecord>,
+}
+
+impl QueueState {
+    fn finish(
+        &mut self,
+        index: usize,
+        status: JobStatus,
+        failure_reason: Option<String>,
+    ) -> JobRecord {
+        let mut job = self.active.remove(index);
+        job.status = status;
+        job.finished_at = Some(Utc::now());
+        job.failure_reason = failure_reason;
+        self.history.push_front(job.clone());
+        self.history.truncate(HISTORY_LIMIT);
+        job
+    }
+}
+
+struct DownloadWorker {
+    queue: DownloadQueue,
+    receiver: mpsc::UnboundedReceiver<String>,
+    db: sea_orm::DatabaseConnection,
+    music_directory: MusicDirectory,
+    downloader: Arc<dyn Downloader>,
+}
+
 impl DownloadWorker {
     async fn run(mut self) {
         while let Some(id) = self.receiver.recv().await {
@@ -186,7 +189,8 @@ impl DownloadWorker {
                 continue;
             };
 
-            let music_dir = self.music_dir.to_string_lossy();
+            let _music_dir_guard = self.music_directory.lock().await;
+            let music_dir = self.music_directory.path().to_string_lossy();
             let result = album_route::download_with(
                 &self.db,
                 &music_dir,

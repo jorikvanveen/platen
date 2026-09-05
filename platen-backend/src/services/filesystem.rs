@@ -21,11 +21,7 @@ pub(crate) fn filesystem_safe_component(value: &str, fallback: &str) -> String {
     }
 }
 
-pub(crate) fn album_location(
-    primary_artist: &str,
-    album_title: &str,
-    release_year: i32,
-) -> String {
+pub(crate) fn album_location(primary_artist: &str, album_title: &str, release_year: i32) -> String {
     let artist_directory = filesystem_safe_component(primary_artist, "Unknown artist");
     let album_directory = format!(
         "{} ({release_year})",
@@ -69,5 +65,4 @@ mod tests {
             "Unknown artist"
         );
     }
-
 }

@@ -13,7 +13,10 @@
 <header class="site-header">
 	<div class="shell">
 		<a class="brand" href="/">Platen</a>
-		<a href="/downloads">Downloads</a>
+		<nav aria-label="Main navigation">
+			<a href="/import">Import</a>
+			<a href="/downloads">Downloads</a>
+		</nav>
 	</div>
 </header>
 
@@ -46,6 +49,14 @@
 		letter-spacing: -0.02em;
 	}
 
+	nav {
+		display: flex;
+		gap: 1rem;
+	}
+
+	nav a {
+		text-underline-offset: 0.2em;
+	}
 
 	main.shell {
 		padding-block: clamp(2rem, 6vw, 4rem);
