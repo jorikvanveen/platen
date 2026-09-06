@@ -580,6 +580,136 @@ async fn issue37_scan_returns_immediately_and_reports_matching_progress_and_conf
 }
 
 #[tokio::test]
+async fn catalog_metadata_survives_creation_reads_and_repeated_adds_and_scans() {
+    use serde_json::json;
+
+    for explicit in [Some(true), Some(false), None] {
+        for (tags, quality) in [
+            (None, None),
+            (Some(vec![]), None),
+            (Some(vec!["FUTURE"]), None),
+            (Some(vec!["LOSSLESS"]), Some("LOSSLESS")),
+            (Some(vec!["HIRES_LOSSLESS"]), Some("HIRES_LOSSLESS")),
+            (Some(vec!["FUTURE", "LOSSLESS"]), Some("LOSSLESS")),
+            (Some(vec!["DOLBY_ATMOS"]), Some("DOLBY_ATMOS")),
+            (
+                Some(vec!["LOSSLESS", "DOLBY_ATMOS"]),
+                Some("LOSSLESS + DOLBY_ATMOS"),
+            ),
+            (
+                Some(vec!["LOSSLESS", "HIRES_LOSSLESS", "DOLBY_ATMOS", "FUTURE"]),
+                Some("HIRES_LOSSLESS + DOLBY_ATMOS"),
+            ),
+        ] {
+            for scan_created in [false, true] {
+                let db = test_database().await;
+                let music = tempfile::tempdir().unwrap();
+                let mut record = ScanAlbum::new("edition", "Title", "2024");
+                record.album.explicit = explicit;
+                record.album.media_tags = tags
+                    .as_ref()
+                    .map(|tags| tags.iter().map(|tag| (*tag).to_owned()).collect());
+                let source = Arc::new(FakeTidalCatalog {
+                    albums: vec![record.clone()],
+                    ..Default::default()
+                });
+                let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+
+                if scan_created {
+                    create_scan_audio(music.path(), &["Primary Artist/Title (2024)"]).await;
+                    assert_eq!(run_scan(&app).await["summary"]["albums_imported"], 1);
+                    assert!(source.metadata_calls.lock().unwrap().is_empty());
+                } else {
+                    let created =
+                        crate::routes::album::create_with(&db, source.as_ref(), "edition")
+                            .await
+                            .unwrap();
+                    let created = serde_json::to_value(created.0).unwrap();
+                    assert_eq!(created["explicit"], json!(explicit));
+                    assert_eq!(created["media_tags"], json!(tags));
+                    assert_eq!(created["available_quality"], json!(quality));
+                    assert_eq!(source.metadata_calls.lock().unwrap().len(), 3);
+                }
+                let stored = album::Entity::find_by_id("edition")
+                    .one(&db)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(stored.explicit, explicit);
+                assert_eq!(stored.media_tags, tags.clone().map(serde_json::Value::from));
+                assert_eq!(
+                    stored.relative_path.as_deref(),
+                    scan_created.then_some("Primary Artist/Title (2024)")
+                );
+
+                record.album.explicit = Some(!explicit.unwrap_or(false));
+                record.album.media_tags = Some(vec!["REPLACEMENT".into()]);
+                let replacement = FakeTidalCatalog {
+                    albums: vec![record],
+                    ..Default::default()
+                };
+                let repeated = crate::routes::album::create_with(&db, &replacement, "edition")
+                    .await
+                    .unwrap();
+                assert_eq!(repeated.0.explicit, explicit);
+                assert_eq!(json!(repeated.0.media_tags), json!(tags));
+                assert!(replacement.metadata_calls.lock().unwrap().is_empty());
+
+                for (method, uri) in [
+                    ("GET", "/artists/z-primary/albums"),
+                    ("GET", "/artists/a-guest/albums"),
+                    ("POST", "/albums/edition"),
+                ] {
+                    let response = app
+                        .clone()
+                        .oneshot(
+                            Request::builder()
+                                .method(method)
+                                .uri(uri)
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), axum::http::StatusCode::OK);
+                    let body: serde_json::Value = serde_json::from_slice(
+                        &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+                    )
+                    .unwrap();
+                    let album = if method == "GET" {
+                        assert_eq!(body.as_array().unwrap().len(), 1);
+                        &body[0]
+                    } else {
+                        &body
+                    };
+                    assert_eq!(album["id"], "edition");
+                    assert_eq!(album["explicit"], json!(explicit));
+                    assert_eq!(album["media_tags"], json!(tags));
+                    assert_eq!(album["available_quality"], json!(quality));
+                    assert_eq!(album["artists"][0]["id"], "z-primary");
+                    assert_eq!(album["artists"][1]["id"], "a-guest");
+                }
+                if scan_created {
+                    assert_eq!(run_scan(&app).await["summary"]["albums_imported"], 0);
+                    assert_eq!(source.searches.lock().unwrap().len(), 1);
+                    assert!(source.metadata_calls.lock().unwrap().is_empty());
+                }
+                assert_eq!(
+                    album::Entity::find_by_id("edition")
+                        .one(&db)
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    stored
+                );
+                worker_handle.abort();
+                let _ = worker_handle.await;
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn issue37_scan_imports_unique_albums_and_preserves_known_metadata_on_rescan() {
     let db = test_database().await;
     insert_test_album(&db, "known").await;

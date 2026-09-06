@@ -70,6 +70,8 @@ async fn seed(
         release_month: Set(Some(6)),
         release_day: Set(Some(12)),
         cover_url: Set(Some("https://example.test/cover".into())),
+        explicit: Set(None),
+        media_tags: Set(None),
     }
     .insert(db)
     .await

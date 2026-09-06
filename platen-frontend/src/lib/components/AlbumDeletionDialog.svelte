@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from "svelte";
+	import AlbumMetadata from "./AlbumMetadata.svelte";
 	import { deleteAlbum, getAlbumDeletionPreview } from "$lib/albumDeletion";
 	import type { Album } from "$lib/dto/Album";
 	import type { AlbumDeletionPreview } from "$lib/dto/AlbumDeletionPreview";
@@ -69,6 +70,8 @@
 	if (!deleting) oncancel();
 }}>
 	<h2 id="album-deletion-title">Delete "{album.title}"?</h2>
+		<AlbumMetadata {album} stacked />
+		<p>Available quality describes availability on Tidal, not the downloaded audio format.</p>
 	{#if loading}
 		<p role="status">Loading deletion preview…</p>
 	{:else if preview}

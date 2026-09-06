@@ -46,7 +46,7 @@
 				{#snippet action()}
 					<AddAlbumButton albumId={album.id} />
 				{/snippet}
-				<ReleaseRow title={album.title} {metadata} {action} discovery={album} />
+				<ReleaseRow title={album.title} {metadata} {action} albumMetadata={album} />
 			{/each}
 		</div>
 	{/if}

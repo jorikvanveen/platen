@@ -16,6 +16,8 @@ pub struct Model {
     pub cover_url: Option<String>,
     #[sea_orm(unique)]
     pub relative_path: Option<String>,
+    pub explicit: Option<bool>,
+    pub media_tags: Option<Json>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

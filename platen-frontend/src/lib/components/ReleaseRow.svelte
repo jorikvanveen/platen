@@ -1,31 +1,31 @@
 <script lang="ts">
 	import type { Snippet } from "svelte";
+		import AlbumMetadata from "./AlbumMetadata.svelte";
 
 	let {
 		title,
 		headingLevel = "h2",
 		metadata,
 		action,
-		discovery,
+		albumMetadata,
+				actionWidth = "5rem",
 	}: {
 		title: string;
 		headingLevel?: "h2" | "h3";
 		metadata: Snippet;
 		action: Snippet;
-		discovery?: { explicit: boolean | null; available_quality: string | null };
+		albumMetadata?: { explicit: boolean | null; available_quality: string | null };
+				actionWidth?: string;
 	} = $props();
 </script>
 
-<article class:discovery={discovery !== undefined}>
+<article class:with-metadata={albumMetadata !== undefined} style:--action-width={actionWidth}>
 	<div>
 		<svelte:element this={headingLevel}>{title}</svelte:element>
 		<div class="metadata">{@render metadata()}</div>
 	</div>
-	{#if discovery}
-		<dl>
-			<div><dt>Explicit</dt><dd>{discovery.explicit === true ? "Explicit" : discovery.explicit === false ? "Not explicit" : "Unknown"}</dd></div>
-			<div><dt>Available quality</dt><dd>{discovery.available_quality ?? "Unknown"}</dd></div>
-		</dl>
+	{#if albumMetadata}
+		<AlbumMetadata album={albumMetadata} />
 	{/if}
 	{@render action()}
 </article>
@@ -42,26 +42,8 @@
 		background: #19181e;
 	}
 
-	article.discovery {
-		grid-template-columns: minmax(0, 1fr) 21rem 5rem;
-	}
-
-	dl {
-		display: grid;
-		grid-template-columns: 8rem 12rem;
-		gap: 1rem;
-		margin: 0;
-	}
-
-	dt {
-		color: #9e9ba8;
-		font-size: 0.8rem;
-		margin-bottom: 0.25rem;
-	}
-
-	dd {
-		margin: 0;
-		overflow-wrap: anywhere;
+	article.with-metadata {
+		grid-template-columns: minmax(0, 1fr) 21rem var(--action-width);
 	}
 
 	h2,
@@ -79,14 +61,10 @@
 	}
 
 	@media (max-width: 800px) {
-		article.discovery {
+		article.with-metadata {
 			grid-template-columns: minmax(0, 1fr);
 		}
 
-		dl {
-			grid-template-columns: minmax(0, 1fr);
-			gap: 0.65rem;
-		}
 	}
 
 	@media (max-width: 620px) {

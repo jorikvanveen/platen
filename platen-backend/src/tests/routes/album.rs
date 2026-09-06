@@ -163,7 +163,7 @@ async fn album_dto_orders_credits_primary_first() {
     }
 
     let artists = credited_artists(&db, &album.id).await.unwrap();
-    let dto: super::dto::Album = (album, artists).into();
+    let dto = super::album_dto(album, artists);
 
     assert_eq!(
         dto.artists

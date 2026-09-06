@@ -192,6 +192,8 @@ async fn persistence_stores_location_cover_and_ordered_credits_without_refreshin
     let db = test_database().await;
     let mut source = FakeCatalog::default();
     source.album.cover_url = Some("https://example.test/cover".into());
+    source.album.explicit = Some(false);
+    source.album.media_tags = Some(vec!["DOLBY_ATMOS".into(), "FUTURE".into()]);
     let prepared = prepare_album(&source, "album-1").await.unwrap();
     let outcome = persist_album(&db, prepared, Some("Primary/Shared album".into()))
         .await
@@ -202,6 +204,11 @@ async fn persistence_stores_location_cover_and_ordered_credits_without_refreshin
         Some("Primary/Shared album")
     );
     assert_eq!(outcome.model.cover_url, source.album.cover_url);
+    assert_eq!(outcome.model.explicit, Some(false));
+    assert_eq!(
+        outcome.model.media_tags,
+        Some(serde_json::json!(["DOLBY_ATMOS", "FUTURE"]))
+    );
     let credits = album_artist::Entity::find()
         .order_by_asc(album_artist::Column::Position)
         .all(&db)
@@ -216,6 +223,8 @@ async fn persistence_stores_location_cover_and_ordered_credits_without_refreshin
     );
 
     source.album.title = "Replacement".into();
+    source.album.explicit = Some(true);
+    source.album.media_tags = Some(vec!["HIRES_LOSSLESS".into()]);
     source.artists = vec![TidalArtist {
         id: "replacement".into(),
         name: "Replacement".into(),

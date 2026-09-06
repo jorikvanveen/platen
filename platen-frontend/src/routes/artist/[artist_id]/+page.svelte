@@ -54,6 +54,7 @@
 {#if data.albums.length === 0}
 	<EmptyState message="No credited releases." />
 {:else}
+	<p>Available quality describes availability on Tidal, not the downloaded audio format.</p>
 	<div class="release-list">
 		{#each data.albums as album (album.id)}
 			{#snippet metadata()}
@@ -85,7 +86,7 @@
 					<button class="error" aria-label={`Delete ${album.title}`} onclick={() => albumToDelete = album}>Delete</button>
 				</div>
 			{/snippet}
-			<ReleaseRow title={album.title} {metadata} {action} />
+			<ReleaseRow title={album.title} {metadata} {action} albumMetadata={album} actionWidth="9rem" />
 		{/each}
 	</div>
 {/if}

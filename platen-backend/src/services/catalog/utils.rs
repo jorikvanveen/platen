@@ -123,6 +123,8 @@ pub(crate) async fn persist_album(
                 release_month: ActiveValue::Set(release_date.month),
                 release_day: ActiveValue::Set(release_date.day),
                 relative_path: ActiveValue::Set(relative_path),
+                explicit: ActiveValue::Set(album.explicit),
+                media_tags: ActiveValue::Set(album.media_tags.map(serde_json::Value::from)),
             })
             .on_conflict_do_nothing()
             .exec(transaction)

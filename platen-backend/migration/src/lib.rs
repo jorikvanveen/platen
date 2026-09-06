@@ -6,6 +6,7 @@ mod m20260829_145526_add_downloaded_to_album;
 mod m20260829_184547_add_cover_url_to_album;
 mod m20260830_145052_add_profile_image_url_to_artist;
 mod m20260902_173506_replace_downloaded_with_relative_path;
+mod m20260906_194808_add_album_metadata;
 
 pub struct Migrator;
 
@@ -18,6 +19,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260829_184547_add_cover_url_to_album::Migration),
             Box::new(m20260830_145052_add_profile_image_url_to_artist::Migration),
             Box::new(m20260902_173506_replace_downloaded_with_relative_path::Migration),
+            Box::new(m20260906_194808_add_album_metadata::Migration),
         ]
     }
 }

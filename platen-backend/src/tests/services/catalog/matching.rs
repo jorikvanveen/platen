@@ -444,6 +444,52 @@ async fn imports_preserve_search_data_without_any_detail_requests() {
 }
 
 #[tokio::test]
+async fn scan_preserves_explicitness_and_raw_tags_without_refresh_or_detail_requests() {
+    for explicit in [Some(true), Some(false), None] {
+        for tags in [
+            None,
+            Some(vec![]),
+            Some(vec!["FUTURE"]),
+            Some(vec!["DOLBY_ATMOS"]),
+            Some(vec!["LOSSLESS", "HIRES_LOSSLESS", "DOLBY_ATMOS", "FUTURE"]),
+        ] {
+            let db = database().await;
+            let mut record = record("one", "Title", "2024");
+            record.album.explicit = explicit;
+            record.album.media_tags = tags
+                .as_ref()
+                .map(|tags| tags.iter().map(|tag| (*tag).to_owned()).collect());
+            let mut source = FakeCatalog {
+                records: vec![record],
+                ..Default::default()
+            };
+            let candidates = vec![candidate("Artist/Title", "AC/DC", "Title", Some(2024))];
+            let summary = run(&db, &source, candidates.clone()).await;
+            assert_eq!(summary.albums_imported, 1);
+            let stored = album::Entity::find_by_id("one")
+                .one(&db)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.explicit, explicit);
+            assert_eq!(stored.media_tags, tags.map(serde_json::Value::from));
+            source.records[0].album.explicit = Some(!explicit.unwrap_or(false));
+            source.records[0].album.media_tags = Some(vec!["REPLACEMENT".into()]);
+            assert_eq!(run(&db, &source, candidates).await.albums_imported, 0);
+            assert_eq!(
+                album::Entity::find_by_id("one")
+                    .one(&db)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                stored
+            );
+            source.assert_no_detail_calls();
+        }
+    }
+}
+
+#[tokio::test]
 async fn duplicate_locations_skip_all_copies_in_any_order() {
     for stored_path in [None, Some("Old/Title")] {
         for reverse in [false, true] {

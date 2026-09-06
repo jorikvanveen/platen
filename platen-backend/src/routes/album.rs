@@ -54,6 +54,9 @@ pub mod dto {
         pub release_month: Option<i32>,
         pub release_day: Option<i32>,
         pub relative_path: Option<String>,
+        pub explicit: Option<bool>,
+        pub media_tags: Option<Vec<String>>,
+        pub available_quality: Option<String>,
     }
 
     #[derive(Debug, Serialize, TS)]
@@ -83,19 +86,28 @@ pub mod dto {
     }
 }
 
-impl From<(album::Model, Vec<Artist>)> for dto::Album {
-    fn from((model, artists): (album::Model, Vec<Artist>)) -> Self {
-        Self {
-            id: model.id,
-            artists,
-            title: model.title,
-            cover_url: model.cover_url,
-            album_type: model.album_type,
-            release_year: model.release_year,
-            release_month: model.release_month,
-            release_day: model.release_day,
-            relative_path: model.relative_path,
-        }
+fn album_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
+    let media_tags = model.media_tags.and_then(|tags| {
+        serde_json::from_value::<Vec<String>>(tags)
+            .inspect_err(|error| {
+                tracing::warn!(album_id = %model.id, %error, "Invalid stored media tags");
+            })
+            .ok()
+    });
+    dto::Album {
+        available_quality: services::tidal::available_quality(media_tags.as_deref())
+            .map(str::to_owned),
+        explicit: model.explicit,
+        media_tags,
+        id: model.id,
+        artists,
+        title: model.title,
+        cover_url: model.cover_url,
+        album_type: model.album_type,
+        release_year: model.release_year,
+        release_month: model.release_month,
+        release_day: model.release_day,
+        relative_path: model.relative_path,
     }
 }
 
@@ -123,38 +135,43 @@ pub async fn create(
     State(AppState { tidal, db, .. }): State<AppState>,
     Path(album_id): Path<String>,
 ) -> Result<Json<dto::Album>, StatusCode> {
+    create_with(&db, &tidal, &album_id).await
+}
+
+pub(crate) async fn create_with(
+    db: &sea_orm::DatabaseConnection,
+    tidal: &dyn services::tidal::TidalCatalog,
+    album_id: &str,
+) -> Result<Json<dto::Album>, StatusCode> {
     info!("Creating album {album_id}");
-    if let Some(existing) = album::Entity::find_by_id(&album_id)
-        .one(&db)
+    if let Some(existing) = album::Entity::find_by_id(album_id)
+        .one(db)
         .await
         .map_err(|e| {
             error!("Db error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     {
-        let artists = credited_artists(&db, &existing.id).await.map_err(|e| {
+        let artists = credited_artists(db, &existing.id).await.map_err(|e| {
             error!("Db error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-        return Ok(Json((existing, artists).into()));
+        return Ok(Json(album_dto(existing, artists)));
     }
 
-    let prepared =
-        catalog::prepare_album(&tidal, &album_id)
-            .await
-            .map_err(|error| match error {
-                catalog::PrepareAlbumError::Tidal(error) => {
-                    crate::routes::utils::map_tidal_error(error)
-                }
-                catalog::PrepareAlbumError::InvalidReleaseDate
-                | catalog::PrepareAlbumError::InvalidCredits => StatusCode::UNPROCESSABLE_ENTITY,
-                catalog::PrepareAlbumError::AlbumIdMismatch => {
-                    crate::routes::utils::map_tidal_error(
-                        services::tidal::TidalError::UnexpectedResponse,
-                    )
-                }
-            })?;
-    let model = catalog::persist_album(&db, prepared, None)
+    let prepared = catalog::prepare_album(tidal, album_id)
+        .await
+        .map_err(|error| match error {
+            catalog::PrepareAlbumError::Tidal(error) => {
+                crate::routes::utils::map_tidal_error(error)
+            }
+            catalog::PrepareAlbumError::InvalidReleaseDate
+            | catalog::PrepareAlbumError::InvalidCredits => StatusCode::UNPROCESSABLE_ENTITY,
+            catalog::PrepareAlbumError::AlbumIdMismatch => crate::routes::utils::map_tidal_error(
+                services::tidal::TidalError::UnexpectedResponse,
+            ),
+        })?;
+    let model = catalog::persist_album(db, prepared, None)
         .await
         .map_err(|error| {
             error!("Db error creating album transaction: {error:#?}");
@@ -162,11 +179,11 @@ pub async fn create(
         })?
         .model;
 
-    let artists = credited_artists(&db, &model.id).await.map_err(|e| {
+    let artists = credited_artists(db, &model.id).await.map_err(|e| {
         error!("Db error loading album credits: {e:#?}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    Ok(Json((model, artists).into()))
+    Ok(Json(album_dto(model, artists)))
 }
 
 /// Legacy artist-scoped creation path, kept so existing clients keep working.
@@ -321,7 +338,7 @@ pub async fn fetch_all_artist_albums(
             let db = &db;
             async move {
                 let artists = credited_artists(db, &album_model.id).await?;
-                Ok::<_, sea_orm::DbErr>((album_model, artists).into())
+                Ok::<_, sea_orm::DbErr>(album_dto(album_model, artists))
             }
         })
     }))
