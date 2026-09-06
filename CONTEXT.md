@@ -12,10 +12,10 @@ platen knows about.
 _Avoid_: library, collection
 
 **Artist**:
-A music artist represented in the catalog. Identified by its Tidal artist ID
-and credited on one or more Albums. An Artist enters the catalog only as a
-side effect of adding an Album it is credited on; it is never created on its
-own, and it cannot be deleted while any Album credits it.
+A music artist represented in the catalog, identified by its Tidal artist ID
+and created only when an Album credits it. Users cannot delete Artists directly;
+deleting an Album automatically removes its credited Artists that have no
+remaining Album credits in the catalog.
 _Avoid_: musician, performer, act
 
 **Album credit**:

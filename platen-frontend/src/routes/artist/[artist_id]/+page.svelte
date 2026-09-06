@@ -1,4 +1,9 @@
 <script lang="ts">
+	import { goto, invalidateAll } from "$app/navigation";
+
+	import AlbumDeletionDialog from "$lib/components/AlbumDeletionDialog.svelte";
+	import type { Album } from "$lib/dto/Album";
+	import type { AlbumDeletionResult } from "$lib/dto/AlbumDeletionResult";
 	import EmptyState from "$lib/components/EmptyState.svelte";
 	import PageHeading from "$lib/components/PageHeading.svelte";
 	import ReleaseRow from "$lib/components/ReleaseRow.svelte";
@@ -7,6 +12,17 @@
 
 	let { data }: PageProps = $props();
 	let downloadState: Record<string, "starting" | "accepted" | "error"> = $state({});
+	let albumToDelete: Album | null = $state(null);
+
+	async function albumDeleted(result: AlbumDeletionResult) {
+		if (result.removed_artist_ids.includes(data.artist.id)) {
+			await goto("/");
+		} else {
+			await invalidateAll();
+		}
+		if (albumToDelete) delete downloadState[albumToDelete.id];
+		albumToDelete = null;
+	}
 
 	async function download(id: string) {
 		if (data.albums.find((album) => album.id === id)?.relative_path !== null) return;
@@ -51,27 +67,41 @@
 				{#if album.relative_path}<span class="album-location">{album.relative_path}</span>{/if}
 			{/snippet}
 			{#snippet action()}
-				{#if downloadState[album.id] === "accepted"}
-					<div class="active-download">
-						<a href="/downloads">View downloads</a>
-					</div>
-				{:else}
-					<button
-						class:success={album.relative_path !== null}
-						class:error={downloadState[album.id] === "error"}
-						disabled={album.relative_path !== null || downloadState[album.id] === "starting"}
-						onclick={() => download(album.id)}
-					>
-						{downloadState[album.id] === "starting" ? "Starting…" : album.relative_path !== null ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
-					</button>
-				{/if}
+				<div class="album-actions">
+					{#if downloadState[album.id] === "accepted"}
+						<div class="active-download">
+							<a href="/downloads">View downloads</a>
+						</div>
+					{:else}
+						<button
+							class:success={album.relative_path !== null}
+							class:error={downloadState[album.id] === "error"}
+							disabled={album.relative_path !== null || downloadState[album.id] === "starting"}
+							onclick={() => download(album.id)}
+						>
+							{downloadState[album.id] === "starting" ? "Starting…" : album.relative_path !== null ? "Downloaded" : downloadState[album.id] === "error" ? "Retry download" : "Download"}
+						</button>
+					{/if}
+					<button class="error" aria-label={`Delete ${album.title}`} onclick={() => albumToDelete = album}>Delete</button>
+				</div>
 			{/snippet}
 			<ReleaseRow title={album.title} {metadata} {action} />
 		{/each}
 	</div>
 {/if}
 
+{#if albumToDelete}
+	<AlbumDeletionDialog album={albumToDelete} oncancel={() => albumToDelete = null} ondeleted={albumDeleted} />
+{/if}
+
 <style>
+	.album-actions {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 0.65rem;
+	}
+
 	.back-link {
 		display: inline-block;
 		margin-bottom: 1.4rem;

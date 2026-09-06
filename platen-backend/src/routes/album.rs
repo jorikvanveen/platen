@@ -6,17 +6,23 @@ use tokio::fs;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, State, rejection::JsonRejection},
 };
 use reqwest::StatusCode;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set,
+    TransactionTrait,
+};
 use tracing::{error, info};
 
 use crate::{
     app::AppState,
     entity::{self, album, album_artist, artist},
     routes::{artist::dto::Artist, download::dto::DownloadJob},
-    services::{self, catalog, downloaders::Downloader, filesystem::album_location},
+    services::{
+        self, album_files::remove_album_directory, catalog, downloaders::Downloader,
+        filesystem::album_location,
+    },
 };
 
 // Reserved child of the Music directory where downloads stage before
@@ -56,6 +62,25 @@ pub mod dto {
         pub updated: u32,
         pub skipped: u32,
     }
+
+    #[derive(Debug, Default, Deserialize, Serialize, TS)]
+    #[ts(export)]
+    pub struct AlbumDeletionRequest {
+        #[serde(default)]
+        pub delete_files: bool,
+    }
+
+    #[derive(Debug, Serialize, TS)]
+    #[ts(export)]
+    pub struct AlbumDeletionPreview {
+        pub absolute_path: Option<String>,
+    }
+
+    #[derive(Debug, Serialize, TS)]
+    #[ts(export)]
+    pub struct AlbumDeletionResult {
+        pub removed_artist_ids: Vec<String>,
+    }
 }
 
 impl From<(album::Model, Vec<Artist>)> for dto::Album {
@@ -75,7 +100,7 @@ impl From<(album::Model, Vec<Artist>)> for dto::Album {
 }
 
 async fn credited_artists(
-    db: &sea_orm::DatabaseConnection,
+    db: &impl ConnectionTrait,
     album_id: &str,
 ) -> Result<Vec<Artist>, sea_orm::DbErr> {
     // A plain join only selects the from-entity's columns, so the artist
@@ -114,20 +139,21 @@ pub async fn create(
         return Ok(Json((existing, artists).into()));
     }
 
-    let prepared = catalog::prepare_album(&tidal, &album_id)
-        .await
-        .map_err(|error| match error {
-            catalog::PrepareAlbumError::Tidal(error) => {
-                crate::routes::utils::map_tidal_error(error)
-            }
-            catalog::PrepareAlbumError::InvalidReleaseDate
-            | catalog::PrepareAlbumError::InvalidCredits => StatusCode::UNPROCESSABLE_ENTITY,
-            catalog::PrepareAlbumError::AlbumIdMismatch => {
-                crate::routes::utils::map_tidal_error(
-                    services::tidal::TidalError::UnexpectedResponse,
-                )
-            }
-        })?;
+    let prepared =
+        catalog::prepare_album(&tidal, &album_id)
+            .await
+            .map_err(|error| match error {
+                catalog::PrepareAlbumError::Tidal(error) => {
+                    crate::routes::utils::map_tidal_error(error)
+                }
+                catalog::PrepareAlbumError::InvalidReleaseDate
+                | catalog::PrepareAlbumError::InvalidCredits => StatusCode::UNPROCESSABLE_ENTITY,
+                catalog::PrepareAlbumError::AlbumIdMismatch => {
+                    crate::routes::utils::map_tidal_error(
+                        services::tidal::TidalError::UnexpectedResponse,
+                    )
+                }
+            })?;
     let model = catalog::persist_album(&db, prepared, None)
         .await
         .map_err(|error| {
@@ -475,4 +501,121 @@ pub(crate) async fn download_with(
     })?;
 
     Ok(())
+}
+
+type DeletionApiError = (StatusCode, String);
+
+fn deletion_database_error(error: sea_orm::DbErr, files_removed: bool) -> DeletionApiError {
+    tracing::error!(%error, files_removed, "Album deletion database operation failed");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        if files_removed {
+            "Album files were removed, but catalog deletion failed. The album remains in the catalog."
+        } else {
+            "Could not delete the album from the catalog. No files were removed."
+        }.to_owned(),
+    )
+}
+
+pub(crate) async fn deletion_preview(
+    State(state): State<AppState>,
+    Path(album_id): Path<String>,
+) -> Result<Json<dto::AlbumDeletionPreview>, DeletionApiError> {
+    let album = album::Entity::find_by_id(album_id)
+        .one(&state.db)
+        .await
+        .map_err(|error| deletion_database_error(error, false))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Album not found.".to_owned()))?;
+    let absolute_path = album
+        .relative_path
+        .as_ref()
+        .map(|relative_path| {
+            path::absolute(state.queue.music_directory().path().join(relative_path))
+                .map(|path| path.to_string_lossy().into_owned())
+        })
+        .transpose()
+        .map_err(|error| {
+            tracing::error!(%error, "Could not resolve album directory for deletion preview");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not resolve the album directory.".to_owned(),
+            )
+        })?;
+    Ok(Json(dto::AlbumDeletionPreview { absolute_path }))
+}
+
+pub(crate) async fn delete(
+    State(state): State<AppState>,
+    Path(album_id): Path<String>,
+    Json(request): Json<dto::AlbumDeletionRequest>,
+) -> Result<Json<dto::AlbumDeletionResult>, DeletionApiError> {
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|error| deletion_database_error(error, false))?;
+    let album = album::Entity::find_by_id(&album_id)
+        .one(&transaction)
+        .await
+        .map_err(|error| deletion_database_error(error, false))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "Album not found.".to_owned()))?;
+    let files_removed = if request.delete_files {
+        let relative_path = album.relative_path.ok_or_else(|| {
+                (StatusCode::UNPROCESSABLE_ENTITY, "Cannot delete files without a recorded album location. The catalog was not changed.".to_owned())
+            })?;
+        match remove_album_directory(state.queue.music_directory().path(), &relative_path).await {
+            Ok(removed) => removed,
+            Err(error) => {
+                tracing::error!(?error, "Album directory removal failed");
+                let _ = transaction.rollback().await;
+                return Err((
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Could not remove the album directory. Files may have been partially removed. The catalog was not changed.".to_owned(),
+                    ));
+            }
+        }
+    } else {
+        false
+    };
+    let catalog_result = async {
+        let credits = album_artist::Entity::find()
+            .filter(album_artist::Column::AlbumId.eq(&album_id))
+            .all(&transaction)
+            .await?;
+        album_artist::Entity::delete_many()
+            .filter(album_artist::Column::AlbumId.eq(&album_id))
+            .exec(&transaction)
+            .await?;
+        album::Entity::delete_by_id(&album_id)
+            .exec(&transaction)
+            .await?;
+        let mut removed_artist_ids = Vec::new();
+        for credit in credits {
+            if album_artist::Entity::find()
+                .filter(album_artist::Column::ArtistId.eq(&credit.artist_id))
+                .one(&transaction)
+                .await?
+                .is_none()
+            {
+                artist::Entity::delete_by_id(&credit.artist_id)
+                    .exec(&transaction)
+                    .await?;
+                removed_artist_ids.push(credit.artist_id);
+            }
+        }
+        Ok::<_, sea_orm::DbErr>(removed_artist_ids)
+    }
+    .await;
+    let removed_artist_ids = match catalog_result {
+        Ok(ids) => ids,
+        Err(error) => {
+            let _ = transaction.rollback().await;
+            return Err(deletion_database_error(error, files_removed));
+        }
+    };
+    transaction
+        .commit()
+        .await
+        .map_err(|error| deletion_database_error(error, files_removed))?;
+    Ok(Json(dto::AlbumDeletionResult { removed_artist_ids }))
 }

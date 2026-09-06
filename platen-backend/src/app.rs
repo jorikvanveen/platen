@@ -25,7 +25,14 @@ pub(crate) fn router(state: AppState) -> Router {
             "/artists/{artist_id}/albums/{album_id}",
             post(routes::album::create_artist_scoped),
         )
-        .route("/albums/{album_id}", post(routes::album::create))
+        .route(
+            "/albums/{album_id}",
+            post(routes::album::create).delete(routes::album::delete),
+        )
+        .route(
+            "/albums/{album_id}/deletion-preview",
+            get(routes::album::deletion_preview),
+        )
         .route(
             "/catalog/refresh-artwork",
             post(routes::catalog::refresh_artwork),

@@ -13,6 +13,9 @@ use sea_orm::{ActiveModelTrait, ConnectionTrait, Database, EntityTrait, QueryOrd
 use tokio::sync::{Notify, Semaphore};
 use tower::ServiceExt;
 
+#[path = "album_deletion.rs"]
+mod album_deletion;
+
 use super::*;
 use crate::{
     entity::{album, album_artist, artist},

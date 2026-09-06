@@ -51,6 +51,7 @@ pub enum CancelError {
 pub struct DownloadQueue {
     state: Arc<Mutex<QueueState>>,
     sender: mpsc::UnboundedSender<String>,
+    music_directory: MusicDirectory,
 }
 
 impl DownloadQueue {
@@ -66,6 +67,7 @@ impl DownloadQueue {
                 history: VecDeque::new(),
             })),
             sender,
+            music_directory: music_directory.clone(),
         };
         let worker = DownloadWorker {
             queue: queue.clone(),
@@ -75,6 +77,10 @@ impl DownloadQueue {
             downloader,
         };
         (queue, tokio::spawn(worker.run()))
+    }
+
+    pub(crate) fn music_directory(&self) -> &MusicDirectory {
+        &self.music_directory
     }
 
     pub async fn enqueue(&self, album_id: String) -> Result<JobRecord, QueueError> {
