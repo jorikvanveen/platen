@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{self, PathBuf};
 
 use chrono::{Datelike, NaiveDate};
 use futures_util::{StreamExt, TryStreamExt, stream};
@@ -6,7 +6,7 @@ use tokio::fs;
 
 use axum::{
     Json,
-    extract::{Path, State, rejection::JsonRejection},
+    extract::{Path, State},
 };
 use reqwest::StatusCode;
 use sea_orm::{

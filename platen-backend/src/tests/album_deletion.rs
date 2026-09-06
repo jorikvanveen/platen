@@ -27,7 +27,7 @@ impl Fixture {
         let (queue, worker) =
             DownloadQueue::start(db.clone(), directory.clone(), downloader.clone());
         let state = AppState {
-            tidal: Tidal::new(String::new(), String::new()),
+            tidal: Tidal::new(String::new(), String::new(), "NL".into()),
             queue,
             scan: ScanCoordinator::new(directory.clone(), db.clone(), Arc::new(EmptyTidalCatalog)),
             db: db.clone(),
