@@ -15,6 +15,7 @@ export const load: PageLoad = async ({ fetch, params }) => {
 	const tidalArtist = (await albumsResponse.json()) as TidalArtistAlbums;
 	return {
 		artist: (await artistResponse.json()) as Artist,
-		albums: tidalArtist.albums
+		albums: tidalArtist.albums,
+				returnedCount: tidalArtist.returned_count
 	};
 };

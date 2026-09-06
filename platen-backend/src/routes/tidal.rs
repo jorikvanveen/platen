@@ -1,13 +1,16 @@
+use std::collections::HashSet;
+
 use axum::{
     Json,
     extract::{Path, Query, State},
 };
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QuerySelect};
 
 use reqwest::StatusCode;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{error, info};
 
-use crate::{app::AppState, services};
+use crate::{app::AppState, entity::album, services};
 
 use crate::routes::utils::map_tidal_error;
 
@@ -39,6 +42,14 @@ pub mod dto {
     pub struct TidalArtistAlbums {
         pub artist: TidalArtist,
         pub albums: Vec<TidalAlbum>,
+        pub returned_count: usize,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, TS)]
+    #[ts(export)]
+    pub struct TidalAlbumSearchResults {
+        pub albums: Vec<TidalAlbumSearchHit>,
+        pub returned_count: usize,
     }
 
     #[derive(Debug, Serialize, Deserialize, TS)]
@@ -111,26 +122,80 @@ pub async fn search_artists(
 
 #[axum::debug_handler]
 pub async fn search_albums(
-    State(AppState { tidal, .. }): State<AppState>,
+    State(AppState { tidal, db, .. }): State<AppState>,
     Query(SearchQuery { query }): Query<SearchQuery>,
-) -> Result<Json<Vec<dto::TidalAlbumSearchHit>>, StatusCode> {
+) -> Result<Json<dto::TidalAlbumSearchResults>, StatusCode> {
     info!("Searching tidal for album: {query}");
     let albums = tidal.find_album(&query).await.map_err(map_tidal_error)?;
-    let hits = albums.into_iter().map(Into::into).collect();
+    let returned_count = albums.len();
+    let albums = exclude_catalog_albums(&db, albums).await?;
 
-    Ok(Json(hits))
+    Ok(Json(dto::TidalAlbumSearchResults {
+        albums: albums.into_iter().map(Into::into).collect(),
+        returned_count,
+    }))
 }
 
 #[axum::debug_handler]
 pub async fn get_artist_albums(
-    State(AppState { tidal, .. }): State<AppState>,
+    State(AppState { tidal, db, .. }): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<dto::TidalArtistAlbums>, StatusCode> {
     info!("Fetching tidal artist {id} with albums");
     let (artist, albums) = tokio::try_join!(tidal.get_artist(&id), tidal.get_artist_albums(&id))
         .map_err(map_tidal_error)?;
+    let returned_count = albums.len();
+    let albums = exclude_catalog_albums(&db, albums).await?;
     Ok(Json(dto::TidalArtistAlbums {
         artist: artist.into(),
         albums: albums.into_iter().map(Into::into).collect(),
+        returned_count,
     }))
 }
+
+trait HasAlbumId {
+    fn album_id(&self) -> &str;
+}
+
+impl HasAlbumId for services::tidal::TidalAlbum {
+    fn album_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl HasAlbumId for services::tidal::ResolvedTidalSearchedAlbum {
+    fn album_id(&self) -> &str {
+        &self.id
+    }
+}
+
+async fn exclude_catalog_albums<T: HasAlbumId>(
+    db: &impl ConnectionTrait,
+    albums: Vec<T>,
+) -> Result<Vec<T>, StatusCode> {
+    if albums.is_empty() {
+        return Ok(albums);
+    }
+    let album_ids: Vec<_> = albums.iter().map(HasAlbumId::album_id).collect();
+    let catalog_ids: HashSet<String> = album::Entity::find()
+        .select_only()
+        .column(album::Column::Id)
+        .filter(album::Column::Id.is_in(album_ids))
+        .into_tuple::<String>()
+        .all(db)
+        .await
+        .map_err(|error| {
+            error!("Could not check catalog album membership: {error:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_iter()
+        .collect();
+    Ok(albums
+        .into_iter()
+        .filter(|album| !catalog_ids.contains(album.album_id()))
+        .collect())
+}
+
+#[cfg(test)]
+#[path = "../tests/routes/tidal.rs"]
+mod tests;

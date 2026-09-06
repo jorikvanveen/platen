@@ -12,11 +12,13 @@
 <a class="back-link" href={`/artist/${data.artist.id}`}>← {data.artist.name}</a>
 <PageHeading
 	title={`More releases by ${data.artist.name}`}
-	description="All releases from this artist on Tidal."
+	description="Releases from this artist on Tidal available to add to your catalog."
 />
 
 {#if data.albums.length === 0}
-	<EmptyState message="No releases found." />
+	<EmptyState message={data.returnedCount > 0
+			? "All returned releases are already in your catalog"
+			: "No releases found."} />
 {:else}
 	{#each groupAlbums(data.albums) as group}
 		<section class="release-group">

@@ -2,4 +2,4 @@
 import type { TidalAlbum } from "./TidalAlbum";
 import type { TidalArtist } from "./TidalArtist";
 
-export type TidalArtistAlbums = { artist: TidalArtist, albums: Array<TidalAlbum>, };
+export type TidalArtistAlbums = { artist: TidalArtist, albums: Array<TidalAlbum>, returned_count: number, };

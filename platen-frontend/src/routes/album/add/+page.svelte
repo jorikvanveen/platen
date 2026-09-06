@@ -4,10 +4,10 @@
 	import PageHeading from "$lib/components/PageHeading.svelte";
 	import ReleaseRow from "$lib/components/ReleaseRow.svelte";
 	import SearchForm from "$lib/components/SearchForm.svelte";
-	import type { TidalAlbumSearchHit } from "$lib/dto/TidalAlbumSearchHit";
+	import type { PageProps } from "./$types";
 	import { navigateToSearch } from "$lib/searchNavigation";
 
-	let { data }: { data: { query: string; albums: TidalAlbumSearchHit[] | null } } = $props();
+	let { data }: PageProps = $props();
 	// svelte-ignore state_referenced_locally
 	let query = $state(data.query);
 	let loading = $state(false);
@@ -31,7 +31,9 @@
 
 {#if data.albums !== null}
 	{#if data.albums.length === 0}
-		<EmptyState message={`No albums matched "${data.query}".`} />
+		<EmptyState message={data.returnedCount > 0
+					? "All returned matches are already in your catalog"
+					: `No albums matched "${data.query}".`} />
 	{:else}
 		<div class="results">
 			{#each data.albums as album (album.id)}
