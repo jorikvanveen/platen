@@ -25,6 +25,33 @@ pub enum TidalError {
     AuthenticationFailed(StatusCode, String),
 }
 
+#[async_trait::async_trait]
+pub(crate) trait TidalCatalog: Send + Sync {
+    async fn find_album(&self, query: &str) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError>;
+    async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError>;
+    async fn get_album_cover(&self, id: &str) -> Result<Option<String>, TidalError>;
+    async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError>;
+}
+
+#[async_trait::async_trait]
+impl TidalCatalog for Tidal {
+    async fn find_album(&self, query: &str) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
+        Tidal::find_album(self, query).await
+    }
+
+    async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError> {
+        Tidal::get_album(self, id).await
+    }
+
+    async fn get_album_cover(&self, id: &str) -> Result<Option<String>, TidalError> {
+        Tidal::get_album_cover(self, id).await
+    }
+
+    async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
+        Tidal::get_album_artists(self, id).await
+    }
+}
+
 struct TidalAuth {
     token: Option<String>,
     expires_at: chrono::DateTime<Utc>,

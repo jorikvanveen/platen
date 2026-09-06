@@ -15,7 +15,7 @@ pub mod dto {
     use serde::Serialize;
     use ts_rs::TS;
 
-    use crate::services::catalog_scan::{ScanPhase, ScanSnapshot, ScanSummary};
+    use crate::services::catalog::{ScanPhase, ScanSnapshot, ScanSummary};
 
     #[derive(Debug, PartialEq, Eq, Serialize, TS)]
     #[serde(rename_all = "snake_case")]

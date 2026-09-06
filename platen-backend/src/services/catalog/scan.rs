@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -7,14 +7,19 @@ use std::{
 use sea_orm::DatabaseConnection;
 use tokio::sync::Mutex;
 
-use super::catalog_reconciliation::reconcile;
+use super::{matching::match_and_import, reconciliation::reconcile};
 
-use crate::{routes::album::STAGING_DIRECTORY, services::music_directory::MusicDirectory};
+use crate::{
+    routes::album::STAGING_DIRECTORY,
+    services::{music_directory::MusicDirectory, tidal::TidalCatalog},
+};
+
+#[cfg(test)]
+use crate::services::tidal;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ScanPhase {
     Scanning,
-    #[allow(dead_code)]
     Matching,
     Completed,
     Failed,
@@ -61,10 +66,22 @@ pub(crate) struct AlbumCandidate {
 
 #[derive(Default)]
 pub(super) struct DiscoveryReport {
+    pub(super) resolved_root: Option<PathBuf>,
+    pub(super) reconciled_duplicate_paths: HashSet<String>,
+    pub(super) reconciled_duplicate_album_ids: HashSet<String>,
     pub(super) candidates: Vec<AlbumCandidate>,
     pub(super) diagnostics: Vec<FilesystemDiagnostic>,
     pub(super) root_failed: bool,
     pub(super) skipped_directories: usize,
+}
+
+impl DiscoveryReport {
+    pub(super) fn absolute_path(&self, relative_path: &str) -> PathBuf {
+        self.resolved_root
+            .as_deref()
+            .unwrap_or(Path::new(""))
+            .join(relative_path)
+    }
 }
 
 impl From<&DiscoveryReport> for ScanSummary {
@@ -107,22 +124,22 @@ struct ScanStatus {
 }
 
 #[derive(Clone)]
-struct ScanHandle {
+pub(super) struct ScanHandle {
     status: Arc<ScanStatus>,
 }
 
-struct ActiveScan {
+pub(super) struct ActiveScan {
     status: Arc<ScanStatus>,
 }
 
 impl ScanHandle {
-    async fn snapshot(&self) -> ScanSnapshot {
+    pub(super) async fn snapshot(&self) -> ScanSnapshot {
         self.status.snapshot.lock().await.clone()
     }
 }
 
 impl ActiveScan {
-    fn new() -> (Self, ScanHandle, ScanSnapshot) {
+    pub(super) fn new() -> (Self, ScanHandle, ScanSnapshot) {
         let snapshot = ScanSnapshot {
             phase: ScanPhase::Scanning,
             summary: ScanSummary::default(),
@@ -141,7 +158,7 @@ impl ActiveScan {
         )
     }
 
-    async fn publish_summary(&self, summary: &ScanSummary) {
+    pub(super) async fn publish_summary(&self, summary: &ScanSummary) {
         self.status.snapshot.lock().await.summary = summary.clone();
     }
 
@@ -164,14 +181,20 @@ impl ActiveScan {
 pub(crate) struct ScanCoordinator {
     music_directory: MusicDirectory,
     db: DatabaseConnection,
+    tidal: Arc<dyn TidalCatalog>,
     latest_scan: Arc<Mutex<Option<ScanHandle>>>,
 }
 
 impl ScanCoordinator {
-    pub(crate) fn new(music_directory: MusicDirectory, db: DatabaseConnection) -> Self {
+    pub(crate) fn new(
+        music_directory: MusicDirectory,
+        db: DatabaseConnection,
+        tidal: Arc<dyn TidalCatalog>,
+    ) -> Self {
         Self {
             music_directory,
             db,
+            tidal,
             latest_scan: Arc::new(Mutex::new(None)),
         }
     }
@@ -201,23 +224,42 @@ impl ScanCoordinator {
     }
 
     async fn run(self, scan: ActiveScan) {
-        let (report, result) = {
+        let (report, mut summary, result) = {
             let _music_dir_guard = self.music_directory.lock().await;
-            let report = discover_album_candidates(self.music_directory.path(), &scan).await;
+            let mut report = discover_album_candidates(self.music_directory.path(), &scan).await;
             let mut summary = ScanSummary::from(&report);
             scan.publish_summary(&summary).await;
-            let result = reconcile(&self.db, &report, &mut summary).await;
+            let result = reconcile(&self.db, &mut report, &mut summary).await;
             scan.publish_summary(&summary).await;
-            (report, result)
+            (report, summary, result)
         };
 
-        if let Err(error) = result {
-            tracing::error!(reason = "catalog_reconciliation", path = %self.music_directory.path().display(), %error, "Could not reconcile Catalog locations");
-            scan.fail("Could not reconcile Catalog locations.").await;
-        } else if report.root_failed {
-            scan.fail("Could not scan the Music directory.").await;
-        } else {
-            scan.complete(report.candidates.len()).await;
+        match result {
+            Err(error) => {
+                let path = report
+                    .resolved_root
+                    .as_deref()
+                    .unwrap_or(self.music_directory.path());
+                tracing::error!(reason = "catalog_reconciliation", path = %path.display(), %error, "Could not reconcile Catalog locations");
+                scan.fail("Could not reconcile Catalog locations.").await;
+            }
+            Ok(_) if report.root_failed => {
+                scan.fail("Could not scan the Music directory.").await;
+            }
+            Ok(candidates) => {
+                scan.status.snapshot.lock().await.phase = ScanPhase::Matching;
+                match_and_import(
+                    &self.db,
+                    self.tidal.as_ref(),
+                    &report,
+                    candidates,
+                    &mut summary,
+                    &scan,
+                )
+                .await;
+                scan.publish_summary(&summary).await;
+                scan.complete(report.candidates.len()).await;
+            }
         }
     }
 }
@@ -247,10 +289,12 @@ async fn discover_album_candidates(configured_root: &Path, scan: &ActiveScan) ->
     };
     let result = scanner.discover().await;
     DiscoveryReport {
+        resolved_root: Some(scanner.music_root),
         root_failed: result.is_err(),
         candidates: result.unwrap_or_default(),
         diagnostics: scanner.diagnostics,
         skipped_directories: scanner.skipped_directories,
+        ..Default::default()
     }
 }
 
@@ -450,6 +494,35 @@ fn is_audio_file(path: &Path) -> bool {
                 "flac" | "mp3" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "aiff" | "aif" | "alac"
             )
         })
+}
+
+#[cfg(test)]
+pub(crate) struct EmptyTidalCatalog;
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl TidalCatalog for EmptyTidalCatalog {
+    async fn find_album(
+        &self,
+        _: &str,
+    ) -> Result<Vec<tidal::ResolvedTidalSearchedAlbum>, tidal::TidalError> {
+        Ok(Vec::new())
+    }
+
+    async fn get_album(&self, _: &str) -> Result<tidal::TidalAlbum, tidal::TidalError> {
+        Err(tidal::TidalError::UnexpectedResponse)
+    }
+
+    async fn get_album_cover(&self, _: &str) -> Result<Option<String>, tidal::TidalError> {
+        Err(tidal::TidalError::UnexpectedResponse)
+    }
+
+    async fn get_album_artists(
+        &self,
+        _: &str,
+    ) -> Result<Vec<tidal::TidalArtist>, tidal::TidalError> {
+        Err(tidal::TidalError::UnexpectedResponse)
+    }
 }
 
 #[cfg(test)]
@@ -655,6 +728,87 @@ mod tests {
         assert_eq!(report.diagnostics[0].path, root);
     }
 
+    struct GatedCatalog {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Semaphore,
+    }
+
+    #[async_trait::async_trait]
+    impl TidalCatalog for GatedCatalog {
+        async fn find_album(
+            &self,
+            _: &str,
+        ) -> Result<Vec<tidal::ResolvedTidalSearchedAlbum>, tidal::TidalError> {
+            self.entered.notify_one();
+            self.release.acquire().await.unwrap().forget();
+            Ok(vec![])
+        }
+
+        async fn get_album(&self, id: &str) -> Result<tidal::TidalAlbum, tidal::TidalError> {
+            EmptyTidalCatalog.get_album(id).await
+        }
+
+        async fn get_album_cover(&self, id: &str) -> Result<Option<String>, tidal::TidalError> {
+            EmptyTidalCatalog.get_album_cover(id).await
+        }
+
+        async fn get_album_artists(
+            &self,
+            id: &str,
+        ) -> Result<Vec<tidal::TidalArtist>, tidal::TidalError> {
+            EmptyTidalCatalog.get_album_artists(id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_releases_music_lock_and_remains_observable_until_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let album_path = root.path().join("Artist/Title");
+        tokio::fs::create_dir_all(&album_path).await.unwrap();
+        tokio::fs::write(album_path.join("track.flac"), b"audio")
+            .await
+            .unwrap();
+        let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+        <migration::Migrator as migration::MigratorTrait>::up(&db, None)
+            .await
+            .unwrap();
+        let music = MusicDirectory::new(root.path().into());
+        let source = Arc::new(GatedCatalog {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        let coordinator = ScanCoordinator::new(music.clone(), db, source.clone());
+        coordinator.start().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), source.entered.notified())
+            .await
+            .unwrap();
+        let snapshot = coordinator.snapshot().await.unwrap();
+        assert_eq!(snapshot.phase, ScanPhase::Matching);
+        assert_eq!(snapshot.summary.candidates_total, 1);
+        assert_eq!(snapshot.summary.candidates_processed, 0);
+        assert_eq!(snapshot.summary.unmatched_candidates, 0);
+        assert!(coordinator.start().await.is_err());
+        let _guard = tokio::time::timeout(std::time::Duration::from_secs(1), music.lock())
+            .await
+            .unwrap();
+        source.release.add_permits(1);
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let snapshot = coordinator.snapshot().await.unwrap();
+                if !snapshot.phase.is_active() {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(terminal.phase, ScanPhase::Completed);
+        assert_eq!(terminal.summary.candidates_processed, 1);
+        assert_eq!(terminal.summary.unmatched_candidates, 1);
+        assert_eq!(terminal.summary.skipped_directories, 1);
+    }
+
     #[tokio::test]
     async fn coordinator_waits_for_music_lock_and_completes_after_reconciliation() {
         use crate::entity::{album, album_artist, artist};
@@ -696,7 +850,8 @@ mod tests {
         .unwrap();
         let music = MusicDirectory::new(root.path().to_owned());
         let guard = music.lock().await;
-        let coordinator = ScanCoordinator::new(music.clone(), db.clone());
+        let coordinator =
+            ScanCoordinator::new(music.clone(), db.clone(), Arc::new(EmptyTidalCatalog));
         coordinator.start().await.unwrap();
         assert!(coordinator.start().await.is_err());
         tokio::task::yield_now().await;
@@ -776,7 +931,11 @@ mod tests {
             report.diagnostics[0].path,
             tokio::fs::canonicalize(&root).await.unwrap()
         );
-        let coordinator = ScanCoordinator::new(MusicDirectory::new(root), db.clone());
+        let coordinator = ScanCoordinator::new(
+            MusicDirectory::new(root),
+            db.clone(),
+            Arc::new(EmptyTidalCatalog),
+        );
         let (scan, handle, _) = ActiveScan::new();
         coordinator.run(scan).await;
         let snapshot = handle.snapshot().await;
@@ -814,7 +973,11 @@ mod tests {
         .await
         .unwrap();
         let music_directory = MusicDirectory::new(root);
-        let coordinator = ScanCoordinator::new(music_directory.clone(), db.clone());
+        let coordinator = ScanCoordinator::new(
+            music_directory.clone(),
+            db.clone(),
+            Arc::new(EmptyTidalCatalog),
+        );
 
         assert_eq!(
             coordinator.start().await.unwrap().phase,

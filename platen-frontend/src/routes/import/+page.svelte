@@ -17,17 +17,22 @@
 	let polling = false;
 
 	const active = $derived(isCatalogScanActive(scan));
-	const phaseLabel = $derived(
-		scan?.phase === "scanning"
-			? "Scanning the filesystem"
-			: scan?.phase === "matching"
-				? "Preparing Catalog candidates"
-				: scan?.phase === "completed"
-					? "Completed"
-					: scan?.phase === "failed"
-						? "Failed"
-						: "Not run yet",
-	);
+	const phaseLabel = $derived(getPhaseLabel(scan?.phase));
+
+	function getPhaseLabel(phase: CatalogScan["phase"] | undefined): string {
+		switch (phase) {
+			case "scanning":
+				return "Scanning the filesystem";
+			case "matching":
+				return "Matching candidates against Tidal";
+			case "completed":
+				return "Completed";
+			case "failed":
+				return "Failed";
+			default:
+				return "Not run yet";
+		}
+	}
 
 	async function follow(current: CatalogScan) {
 		if (polling) return;
@@ -65,14 +70,17 @@
 			? [
 					["Album directories", scan.summary.album_directories_found],
 					["Candidates processed", `${scan.summary.candidates_processed} / ${scan.summary.candidates_total}`],
+					["Albums imported", scan.summary.albums_imported],
 					["Locations attached", scan.summary.locations_attached],
-										["Locations changed", scan.summary.locations_changed],
-										["Locations unchanged", scan.summary.unchanged_locations],
-										["Locations cleared", scan.summary.locations_cleared],
-										["Duplicate locations skipped", scan.summary.duplicate_locations],
-										["Skipped directories", scan.summary.skipped_directories],
+					["Locations changed", scan.summary.locations_changed],
+					["Locations unchanged", scan.summary.unchanged_locations],
+					["Locations cleared", scan.summary.locations_cleared],
+					["Unmatched candidates", scan.summary.unmatched_candidates],
+					["Ambiguous matches", scan.summary.ambiguous_matches],
+					["Duplicate locations skipped", scan.summary.duplicate_locations],
+					["Skipped directories", scan.summary.skipped_directories],
 					["Filesystem errors", scan.summary.filesystem_errors],
-					["Failures", scan.summary.failures],
+					["Tidal or database failures", scan.summary.failures],
 				]
 			: [],
 	);
@@ -80,7 +88,7 @@
 
 <PageHeading
 	title="Import music"
-	description="Scan the configured Music directory to update locations for existing Catalog albums. Missing or inaccessible audio clears its stored location. Files and album metadata stay untouched."
+	description="Scan the configured Music directory to update existing Catalog locations and import unique, high-confidence Tidal matches. Missing or inaccessible audio clears its stored location. Files and existing album metadata stay untouched."
 />
 
 <section class="status" aria-live="polite">

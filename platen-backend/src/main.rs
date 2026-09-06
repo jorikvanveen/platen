@@ -9,7 +9,7 @@ use crate::{
     app::{AppState, router},
     config::Config,
     services::{
-        catalog_scan::ScanCoordinator, download_queue::DownloadQueue, downloaders::antra::Antra,
+        catalog::ScanCoordinator, download_queue::DownloadQueue, downloaders::antra::Antra,
         music_directory::MusicDirectory, tidal::Tidal,
     },
 };
@@ -47,7 +47,7 @@ async fn main() -> color_eyre::Result<()> {
     let music_directory = MusicDirectory::new(PathBuf::from(&config.music_dir));
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), Arc::new(antra));
-    let scan = ScanCoordinator::new(music_directory, db.clone());
+    let scan = ScanCoordinator::new(music_directory, db.clone(), Arc::new(tidal.clone()));
     let app = router(AppState {
         tidal,
         queue,

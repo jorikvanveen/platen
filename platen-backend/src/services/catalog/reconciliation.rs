@@ -1,13 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use sea_orm::{ActiveModelTrait, DatabaseConnection, DbErr, EntityTrait, QueryOrder, Set};
 
-use crate::entity::{album, album_artist, artist};
-
-use super::{
-    catalog_scan::{AlbumCandidate, DiscoveryReport, ScanSummary},
-    filesystem::filesystem_safe_component,
+use crate::{
+    entity::{album, album_artist, artist},
+    services::filesystem::filesystem_safe_component,
 };
+
+use super::scan::{AlbumCandidate, DiscoveryReport, ScanSummary};
 
 fn normalized_matching_component(value: &str, fallback: &str) -> String {
     filesystem_safe_component(value, fallback)
@@ -17,7 +20,7 @@ fn normalized_matching_component(value: &str, fallback: &str) -> String {
         .to_lowercase()
 }
 
-fn identity(artist: &str, title: &str) -> (String, String) {
+pub(super) fn identity(artist: &str, title: &str) -> (String, String) {
     (
         normalized_matching_component(artist, "Unknown artist"),
         normalized_matching_component(title, "Unknown album"),
@@ -26,9 +29,11 @@ fn identity(artist: &str, title: &str) -> (String, String) {
 
 pub(super) async fn reconcile(
     db: &DatabaseConnection,
-    report: &DiscoveryReport,
+    report: &mut DiscoveryReport,
     summary: &mut ScanSummary,
-) -> Result<(), DbErr> {
+) -> Result<Vec<AlbumCandidate>, DbErr> {
+    report.reconciled_duplicate_paths.clear();
+    report.reconciled_duplicate_album_ids.clear();
     let observed_disk_paths: HashSet<&str> = report
         .candidates
         .iter()
@@ -68,12 +73,13 @@ pub(super) async fn reconcile(
     }
     let mut disk_candidates_by_catalog_album_id: HashMap<&str, Vec<&AlbumCandidate>> =
         HashMap::new();
+    let mut unknown_candidates = Vec::new();
     for disk_candidate in &report.candidates {
-        summary.candidates_processed = summary.candidates_processed.saturating_add(1);
         // An observed stored location keeps its identity even if its name no longer matches metadata.
         if let Some(catalog_album_id) =
             catalog_album_id_by_path.get(disk_candidate.relative_path.as_str())
         {
+            summary.candidates_processed += 1;
             disk_candidates_by_catalog_album_id
                 .entry(catalog_album_id)
                 .or_default()
@@ -99,23 +105,33 @@ pub(super) async fn reconcile(
                 .or_default()
                 .push(disk_candidate),
             [] => {
-                summary.unmatched_candidates = summary.unmatched_candidates.saturating_add(1);
-                summary.skipped_directories = summary.skipped_directories.saturating_add(1);
-                tracing::info!(reason = "no_catalog_match", path = %disk_candidate.relative_path, "Skipped directory during Catalog reconciliation");
+                unknown_candidates.push(disk_candidate.clone());
+                continue;
             }
             _ => {
                 summary.ambiguous_matches = summary.ambiguous_matches.saturating_add(1);
                 summary.skipped_directories = summary.skipped_directories.saturating_add(1);
-                tracing::warn!(reason = "ambiguous_catalog_match", path = %disk_candidate.relative_path, "Skipped directory during Catalog reconciliation");
+                let album_ids: Vec<_> = matching_catalog_albums
+                    .iter()
+                    .map(|album| album.id.as_str())
+                    .collect();
+                tracing::warn!(reason = "ambiguous_catalog_match", path = %report.absolute_path(&disk_candidate.relative_path).display(), ?album_ids, "Skipped directory during Catalog reconciliation");
             }
         }
+        summary.candidates_processed += 1;
     }
     for (catalog_album_id, disk_candidates) in &disk_candidates_by_catalog_album_id {
         if disk_candidates.len() > 1 {
+            report
+                .reconciled_duplicate_album_ids
+                .insert((*catalog_album_id).to_owned());
             for disk_candidate in disk_candidates {
+                report
+                    .reconciled_duplicate_paths
+                    .insert(disk_candidate.relative_path.clone());
                 summary.duplicate_locations = summary.duplicate_locations.saturating_add(1);
                 summary.skipped_directories = summary.skipped_directories.saturating_add(1);
-                tracing::warn!(reason = "duplicate_album_location", path = %disk_candidate.relative_path, album_id = catalog_album_id, "Skipped duplicate Album location");
+                tracing::warn!(reason = "duplicate_album_location", path = %report.absolute_path(&disk_candidate.relative_path).display(), album_id = catalog_album_id, "Skipped duplicate Album location");
             }
         }
     }
@@ -131,10 +147,17 @@ pub(super) async fn reconcile(
             stored_path.is_some_and(|path| observed_disk_paths.contains(path)),
             disk_candidates,
         );
-        apply_location_decision(db, catalog_album, decision, summary).await;
+        apply_location_decision(
+            db,
+            catalog_album,
+            decision,
+            summary,
+            report.resolved_root.as_deref(),
+        )
+        .await;
     }
 
-    Ok(())
+    Ok(unknown_candidates)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -172,11 +195,12 @@ async fn apply_location_decision(
     album: &album::Model,
     decision: LocationDecision<'_>,
     summary: &mut ScanSummary,
+    root: Option<&Path>,
 ) {
     let (new_path, reason, count) = match decision {
         LocationDecision::Keep(path) => {
             summary.unchanged_locations = summary.unchanged_locations.saturating_add(1);
-            tracing::info!(reason = "location_observed", path, album_id = %album.id, "Kept Album location");
+            tracing::info!(reason = "location_observed", path = %root.unwrap_or(Path::new("")).join(path).display(), album_id = %album.id, "Kept Album location");
             return;
         }
         LocationDecision::NoLocation => return,
@@ -202,21 +226,22 @@ async fn apply_location_decision(
     }
     .update(db)
     .await;
+    let path = root.unwrap_or(Path::new("")).join(path);
     match result {
         Ok(_) => {
             *count = count.saturating_add(1);
-            tracing::info!(reason, path, old_path = ?album.relative_path, album_id = %album.id, "Reconciled Album location");
+            tracing::info!(reason, path = %path.display(), old_path = ?album.relative_path, album_id = %album.id, "Reconciled Album location");
         }
         Err(error) => {
             summary.failures = summary.failures.saturating_add(1);
-            tracing::error!(reason = "persist_album_location", path, album_id = %album.id, %error, "Could not reconcile Album location");
+            tracing::error!(reason = "persist_album_location", path = %path.display(), album_id = %album.id, %error, "Could not reconcile Album location");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::catalog_scan::FilesystemDiagnostic;
+    use super::super::scan::FilesystemDiagnostic;
     use super::*;
     use migration::MigratorTrait;
     use sea_orm::{ColumnTrait, Database, QueryFilter};
@@ -331,13 +356,37 @@ mod tests {
     }
 
     async fn run(db: &DatabaseConnection, candidates: Vec<AlbumCandidate>) -> ScanSummary {
-        let report = DiscoveryReport {
+        let mut report = DiscoveryReport {
             candidates,
             ..Default::default()
         };
         let mut summary = ScanSummary::from(&report);
-        reconcile(db, &report, &mut summary).await.unwrap();
+        reconcile(db, &mut report, &mut summary).await.unwrap();
         summary
+    }
+
+    #[tokio::test]
+    async fn unknown_candidates_are_returned_without_counting_them_as_processed_or_skipped() {
+        let db = database().await;
+        seed(&db, "known", "Known", 2024, None, &["Artist"]).await;
+        let unknown = candidate("Artist/Unknown", "Artist", "Unknown", None);
+        let mut report = DiscoveryReport {
+            candidates: vec![
+                candidate("Artist/Known", "Artist", "Known", None),
+                unknown.clone(),
+            ],
+            ..Default::default()
+        };
+        let mut summary = ScanSummary::from(&report);
+        assert_eq!(
+            reconcile(&db, &mut report, &mut summary).await.unwrap(),
+            vec![unknown]
+        );
+        assert_eq!(summary.candidates_total, 2);
+        assert_eq!(summary.candidates_processed, 1);
+        assert_eq!(summary.locations_attached, 1);
+        assert_eq!(summary.unmatched_candidates, 0);
+        assert_eq!(summary.skipped_directories, 0);
     }
 
     #[tokio::test]
@@ -434,7 +483,7 @@ mod tests {
             &["Artist"],
         )
         .await;
-        let report = DiscoveryReport {
+        let mut report = DiscoveryReport {
             candidates: vec![candidate("Artist/Visible", "Artist", "Visible", None)],
             diagnostics: vec![FilesystemDiagnostic {
                 reason: "read_directory",
@@ -445,7 +494,7 @@ mod tests {
             ..Default::default()
         };
         let mut summary = ScanSummary::from(&report);
-        reconcile(&db, &report, &mut summary).await.unwrap();
+        reconcile(&db, &mut report, &mut summary).await.unwrap();
         assert_eq!(summary.filesystem_errors, 1);
         assert_eq!(summary.locations_cleared, 2);
         assert_eq!(summary.unchanged_locations, 1);
@@ -578,7 +627,9 @@ mod tests {
                 usize::from(matches),
                 "{artist} / {title} / {year:?}"
             );
-            assert_eq!(summary.unmatched_candidates, usize::from(!matches));
+            assert_eq!(summary.unmatched_candidates, 0);
+            assert_eq!(summary.candidates_processed, usize::from(matches));
+            assert_eq!(summary.skipped_directories, 0);
             assert_eq!(stored(&db, "album").await.relative_path.is_some(), matches);
         }
     }

@@ -87,6 +87,48 @@ describe("catalog scan requests", () => {
 		expect(fetcher).toHaveBeenCalledTimes(2);
 	});
 
+	it("resumes matching, publishes changing counters, and retains final outcomes", async () => {
+		const initial = {
+			...scan("matching"),
+			summary: { ...emptySummary, candidates_total: 8, candidates_processed: 2 },
+		};
+		const matching = { ...initial, summary: { ...initial.summary, candidates_processed: 6 } };
+		const completed: CatalogScan = {
+			phase: "completed",
+			summary: {
+				...matching.summary,
+				candidates_processed: 8,
+				albums_imported: 3,
+				unmatched_candidates: 2,
+				ambiguous_matches: 1,
+				duplicate_locations: 2,
+			},
+			failure_reason: null,
+		};
+		const fetcher = vi.fn()
+			.mockResolvedValueOnce(response(matching))
+			.mockResolvedValueOnce(response(completed));
+		const onUpdate = vi.fn();
+		const sleep = vi.fn().mockResolvedValue(undefined);
+
+		await expect(pollCatalogScan(fetcher, onUpdate, { initial, sleep })).resolves.toEqual(completed);
+		expect(onUpdate.mock.calls.map(([status]) => status)).toEqual([initial, matching, completed]);
+		expect(fetcher).toHaveBeenCalledTimes(2);
+		expect(sleep.mock.calls).toEqual([[1000], [1000]]);
+	});
+
+	it.each(["completed", "failed"] as const)("does not poll an initial %s status", async (phase) => {
+		const initial = scan(phase);
+		const fetcher = vi.fn();
+		const onUpdate = vi.fn();
+		const sleep = vi.fn();
+
+		await expect(pollCatalogScan(fetcher, onUpdate, { initial, sleep })).resolves.toEqual(initial);
+		expect(onUpdate).toHaveBeenCalledExactlyOnceWith(initial);
+		expect(fetcher).not.toHaveBeenCalled();
+		expect(sleep).not.toHaveBeenCalled();
+	});
+
 	it("stops polling when the scan fails", async () => {
 		const failed = { ...scan("failed"), failure_reason: "Could not scan the Music directory." };
 		const fetcher = vi.fn().mockResolvedValue(response(failed));

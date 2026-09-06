@@ -9,17 +9,14 @@ use axum::{
     extract::{Path, State},
 };
 use reqwest::StatusCode;
-use sea_orm::{
-    ActiveModelTrait, ActiveValue, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set,
-    TransactionTrait,
-};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use tracing::{error, info};
 
 use crate::{
     app::AppState,
     entity::{self, album, album_artist, artist},
     routes::{artist::dto::Artist, download::dto::DownloadJob},
-    services::{self, catalog_utils, downloaders::Downloader, filesystem::album_location},
+    services::{self, catalog, downloaders::Downloader, filesystem::album_location},
 };
 
 // Reserved child of the Music directory where downloads stage before
@@ -117,66 +114,27 @@ pub async fn create(
         return Ok(Json((existing, artists).into()));
     }
 
-    let tidal_album = tidal
-        .get_album(&album_id)
+    let prepared = catalog::prepare_album(&tidal, &album_id)
         .await
-        .map_err(crate::routes::utils::map_tidal_error)?;
-    let tidal_artists = tidal
-        .get_album_artists(&album_id)
-        .await
-        .map_err(crate::routes::utils::map_tidal_error)?;
-    let cover_url = match tidal.get_album_cover(&album_id).await {
-        Ok(cover_url) => cover_url,
-        Err(error_message) => {
-            error!("Could not fetch cover for album {album_id}: {error_message:#?}");
-            None
-        }
-    };
-
-    let release_date = tidal_album
-        .release_date
-        .as_deref()
-        .and_then(|date| parse_release_date(date).ok())
-        .ok_or(StatusCode::UNPROCESSABLE_ENTITY)?;
-
-    let new_album = album::ActiveModel {
-        id: ActiveValue::Set(tidal_album.id),
-        title: ActiveValue::Set(tidal_album.title),
-        cover_url: ActiveValue::Set(cover_url),
-        album_type: ActiveValue::Set(Some(tidal_album.r#type)),
-        release_year: ActiveValue::Set(release_date.year),
-        release_month: ActiveValue::Set(release_date.month),
-        release_day: ActiveValue::Set(release_date.day),
-        ..Default::default()
-    };
-    let album_id_for_txn = album_id.clone();
-    let model = db
-        .transaction::<_, album::Model, sea_orm::DbErr>(|txn| {
-            Box::pin(async move {
-                album::Entity::insert(new_album)
-                    .on_conflict_do_nothing()
-                    .exec(txn)
-                    .await?;
-                let model = album::Entity::find_by_id(&album_id_for_txn)
-                    .one(txn)
-                    .await?
-                    .ok_or_else(|| {
-                        sea_orm::DbErr::RecordNotFound(format!(
-                            "Album {album_id_for_txn} was not found after insertion"
-                        ))
-                    })?;
-                for tidal_artist in &tidal_artists {
-                    catalog_utils::upsert_artist(txn, tidal_artist).await?;
-                }
-                catalog_utils::insert_credits(txn, &model.id, &tidal_artists).await?;
-                Ok(model)
-            })
-        })
-        .await
-        .map_err(|e| {
-            error!("Db error creating album transaction: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
+        .map_err(|error| match error {
+            catalog::PrepareAlbumError::Tidal(error) => {
+                crate::routes::utils::map_tidal_error(error)
+            }
+            catalog::PrepareAlbumError::InvalidReleaseDate
+            | catalog::PrepareAlbumError::InvalidCredits => StatusCode::UNPROCESSABLE_ENTITY,
+            catalog::PrepareAlbumError::AlbumIdMismatch => {
+                crate::routes::utils::map_tidal_error(
+                    services::tidal::TidalError::UnexpectedResponse,
+                )
+            }
         })?;
+    let model = catalog::persist_album(&db, prepared, None)
+        .await
+        .map_err(|error| {
+            error!("Db error creating album transaction: {error:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .model;
 
     let artists = credited_artists(&db, &model.id).await.map_err(|e| {
         error!("Db error loading album credits: {e:#?}");

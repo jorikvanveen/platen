@@ -6,7 +6,7 @@ use sea_orm::DatabaseConnection;
 
 use crate::{
     routes,
-    services::{catalog_scan::ScanCoordinator, download_queue::DownloadQueue, tidal::Tidal},
+    services::{catalog::ScanCoordinator, download_queue::DownloadQueue, tidal::Tidal},
 };
 
 #[derive(Clone)]
@@ -65,17 +65,142 @@ mod tests {
 
     use axum::{Router, body::Body, body::to_bytes, http::Request};
     use migration::{Migrator, MigratorTrait};
-    use sea_orm::{ActiveModelTrait, Database, EntityTrait, QueryOrder, Set};
-    use tokio::sync::Notify;
+    use sea_orm::{ActiveModelTrait, ConnectionTrait, Database, EntityTrait, QueryOrder, Set};
+    use tokio::sync::{Notify, Semaphore};
     use tower::ServiceExt;
 
     use super::*;
     use crate::{
         entity::{album, album_artist, artist},
         services::{
-            catalog_scan::ScanCoordinator, downloaders::Downloader, music_directory::MusicDirectory,
+            catalog::{EmptyTidalCatalog, ScanCoordinator},
+            downloaders::Downloader,
+            music_directory::MusicDirectory,
+            tidal::{
+                ResolvedTidalSearchedAlbum, TidalAlbum, TidalArtist, TidalCatalog, TidalError,
+            },
         },
     };
+
+    #[derive(Clone)]
+    struct ScanAlbum {
+        album: TidalAlbum,
+        artists: Vec<TidalArtist>,
+        failure: Option<&'static str>,
+    }
+
+    impl ScanAlbum {
+        fn new(id: &str, title: &str, date: &str) -> Self {
+            Self {
+                album: TidalAlbum {
+                    id: id.to_owned(),
+                    title: title.to_owned(),
+                    cover_url: None,
+                    release_date: Some(date.to_owned()),
+                    popularity: 0.0,
+                    r#type: "ALBUM".to_owned(),
+                },
+                artists: vec![
+                    TidalArtist {
+                        id: "z-primary".to_owned(),
+                        name: "Primary Artist".to_owned(),
+                        profile_image_url: Some("https://example.test/primary.jpg".to_owned()),
+                    },
+                    TidalArtist {
+                        id: "a-guest".to_owned(),
+                        name: "Guest Artist".to_owned(),
+                        profile_image_url: None,
+                    },
+                ],
+                failure: None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeTidalCatalog {
+        albums: Vec<ScanAlbum>,
+        failed_searches: Vec<String>,
+        search_gate: Option<Semaphore>,
+        search_started: Notify,
+        searches: StdMutex<Vec<String>>,
+        metadata_calls: StdMutex<Vec<String>>,
+    }
+
+    impl FakeTidalCatalog {
+        fn album(&self, id: &str) -> &ScanAlbum {
+            self.albums
+                .iter()
+                .find(|record| record.album.id == id)
+                .unwrap()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TidalCatalog for FakeTidalCatalog {
+        async fn find_album(
+            &self,
+            query: &str,
+        ) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
+            self.searches.lock().unwrap().push(query.to_owned());
+            self.search_started.notify_one();
+            if let Some(gate) = &self.search_gate {
+                gate.acquire().await.unwrap().forget();
+            }
+            if self.failed_searches.iter().any(|failed| failed == query) {
+                return Err(TidalError::UnexpectedResponse);
+            }
+            Ok(self
+                .albums
+                .iter()
+                .filter(|record| query == format!("Primary Artist {}", record.album.title))
+                .map(|record| ResolvedTidalSearchedAlbum {
+                    id: record.album.id.clone(),
+                    title: record.album.title.clone(),
+                    cover_url: None,
+                    release_date: if record.failure == Some("date") {
+                        Some("invalid".to_owned())
+                    } else {
+                        record.album.release_date.clone()
+                    },
+                    popularity: 0.0,
+                    artists: if record.failure == Some("empty-credits") {
+                        Vec::new()
+                    } else {
+                        record.artists.clone()
+                    },
+                    r#type: record.album.r#type.clone(),
+                })
+                .collect())
+        }
+
+        async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError> {
+            self.metadata_calls.lock().unwrap().push(id.to_owned());
+            let record = self.album(id);
+            if record.failure == Some("metadata") {
+                return Err(TidalError::UnexpectedResponse);
+            }
+            Ok(record.album.clone())
+        }
+
+        async fn get_album_cover(&self, id: &str) -> Result<Option<String>, TidalError> {
+            self.metadata_calls.lock().unwrap().push(id.to_owned());
+            if self.album(id).failure == Some("cover") {
+                return Err(TidalError::UnexpectedResponse);
+            }
+            Ok(self.album(id).album.cover_url.clone())
+        }
+
+        async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
+            self.metadata_calls.lock().unwrap().push(id.to_owned());
+            let record = self.album(id);
+            if record.failure == Some("credits") {
+                return Err(TidalError::UnexpectedResponse);
+            }
+
+            Ok(record.artists.clone())
+        }
+    }
 
     struct FailFirstDownloader {
         calls: AtomicUsize,
@@ -200,7 +325,11 @@ mod tests {
         AppState {
             tidal: Tidal::new(String::new(), String::new()),
             queue,
-            scan: ScanCoordinator::new(MusicDirectory::new(temp_music_dir()), db.clone()),
+            scan: ScanCoordinator::new(
+                MusicDirectory::new(temp_music_dir()),
+                db.clone(),
+                Arc::new(EmptyTidalCatalog),
+            ),
             db,
         }
     }
@@ -274,6 +403,10 @@ mod tests {
         let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
         let started: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(started["phase"], "scanning");
+        wait_for_scan(app).await
+    }
+
+    async fn wait_for_scan(app: &Router) -> serde_json::Value {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let status = scan_status(app).await;
@@ -285,6 +418,33 @@ mod tests {
         })
         .await
         .unwrap()
+    }
+
+    async fn create_scan_audio(music_root: &Path, paths: &[&str]) {
+        for path in paths {
+            let disc = music_root.join(path).join("Disc 1");
+            tokio::fs::create_dir_all(&disc).await.unwrap();
+            tokio::fs::write(disc.join("track.OpUs"), b"audio")
+                .await
+                .unwrap();
+        }
+    }
+
+    fn scan_app(
+        db: &DatabaseConnection,
+        music_root: &Path,
+        source: Arc<FakeTidalCatalog>,
+    ) -> (Router, tokio::task::JoinHandle<()>) {
+        let music_directory = MusicDirectory::new(music_root.to_owned());
+        let (queue, worker_handle) =
+            DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
+        let app = router(AppState {
+            tidal: Tidal::new(String::new(), String::new()),
+            queue,
+            scan: ScanCoordinator::new(music_directory, db.clone(), source),
+            db: db.clone(),
+        });
+        (app, worker_handle)
     }
 
     async fn catalog_rows(
@@ -375,6 +535,347 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn issue37_scan_returns_immediately_and_reports_matching_progress_and_conflict() {
+        let db = test_database().await;
+        let music = tempfile::tempdir().unwrap();
+        create_scan_audio(
+            music.path(),
+            &[
+                "Primary Artist/Alpha",
+                "Primary Artist/Beta",
+                "Primary Artist/Gamma",
+            ],
+        )
+        .await;
+        let source = Arc::new(FakeTidalCatalog {
+            albums: vec![
+                ScanAlbum::new("alpha", "Alpha", "2024"),
+                ScanAlbum::new("beta", "Beta", "2024"),
+                ScanAlbum::new("gamma", "Gamma", "2024"),
+            ],
+            search_gate: Some(Semaphore::new(0)),
+            ..Default::default()
+        });
+        let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+        assert_eq!(scan_status(&app).await, serde_json::Value::Null);
+
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/catalog/scan")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        let started: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(started["phase"], "scanning");
+        tokio::time::timeout(Duration::from_secs(2), source.search_started.notified())
+            .await
+            .unwrap();
+        let matching = scan_status(&app).await;
+        assert_eq!(matching["phase"], "matching");
+        assert_eq!(matching["summary"]["album_directories_found"], 3);
+        assert_eq!(matching["summary"]["candidates_total"], 3);
+        assert_eq!(matching["summary"]["candidates_processed"], 0);
+        assert!(catalog_rows(&db).await.0.is_empty());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/catalog/scan")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            matching
+        );
+
+        source.search_gate.as_ref().unwrap().add_permits(1);
+        let progress = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let status = scan_status(&app).await;
+                if status["summary"]["candidates_processed"] == 1 {
+                    break status;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(progress["phase"], "matching");
+        assert_eq!(progress["summary"]["candidates_total"], 3);
+        assert_eq!(progress["summary"]["albums_imported"], 0);
+        source.search_gate.as_ref().unwrap().add_permits(2);
+        let completed = wait_for_scan(&app).await;
+        assert_eq!(completed["phase"], "completed");
+        assert_eq!(completed["summary"]["candidates_processed"], 3);
+        assert_eq!(completed["summary"]["albums_imported"], 3);
+        assert_eq!(completed["summary"]["failures"], 0);
+        assert_eq!(source.searches.lock().unwrap().len(), 3);
+        assert_eq!(scan_status(&app).await, completed);
+        assert_eq!(catalog_rows(&db).await.0.len(), 3);
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn issue37_scan_imports_unique_albums_and_preserves_known_metadata_on_rescan() {
+        let db = test_database().await;
+        insert_test_album(&db, "known").await;
+        album::ActiveModel {
+            id: Set("known".to_owned()),
+            relative_path: Set(Some("Old/Location".to_owned())),
+            release_month: Set(Some(6)),
+            release_day: Set(Some(12)),
+            cover_url: Set(Some("https://example.test/known.jpg".to_owned())),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
+        let before = catalog_rows(&db).await;
+        let music = tempfile::tempdir().unwrap();
+        create_scan_audio(
+            music.path(),
+            &[
+                "Test artist/Album known (2026)",
+                "Primary Artist/Collaboration (2024)",
+                "Primary Artist/Undated folder",
+            ],
+        )
+        .await;
+        let collaboration = ScanAlbum::new("collaboration", "Collaboration", "2024-02-29");
+
+        let source = Arc::new(FakeTidalCatalog {
+            albums: vec![
+                collaboration.clone(),
+                collaboration,
+                ScanAlbum::new("wrong-year", "Collaboration", "2025-02-28"),
+                ScanAlbum::new("undated", "Undated folder", "2023"),
+            ],
+            ..Default::default()
+        });
+        let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+        let completed = run_scan(&app).await;
+        assert_eq!(completed["phase"], "completed");
+        assert_eq!(completed["failure_reason"], serde_json::Value::Null);
+        assert_eq!(
+            completed["summary"],
+            serde_json::json!({
+                "album_directories_found": 3, "candidates_processed": 3, "candidates_total": 3,
+                "albums_imported": 2, "locations_attached": 0, "locations_changed": 1,
+                "unchanged_locations": 0, "locations_cleared": 0, "unmatched_candidates": 0,
+                "ambiguous_matches": 0, "duplicate_locations": 0, "skipped_directories": 0,
+                "failures": 0, "filesystem_errors": 0
+            })
+        );
+        let after = catalog_rows(&db).await;
+        assert_eq!(after.0.len(), 3);
+        let mut known = before.0[0].clone();
+        known.relative_path = Some("Test artist/Album known (2026)".to_owned());
+        assert_eq!(
+            after.0.iter().find(|album| album.id == "known"),
+            Some(&known)
+        );
+        assert_eq!(
+            after.1.iter().find(|artist| artist.id == "artist-known"),
+            Some(&before.1[0])
+        );
+        assert_eq!(
+            after.2.iter().find(|credit| credit.album_id == "known"),
+            Some(&before.2[0])
+        );
+        for (id, path, year, month, day) in [
+            (
+                "collaboration",
+                "Primary Artist/Collaboration (2024)",
+                2024,
+                Some(2),
+                Some(29),
+            ),
+            ("undated", "Primary Artist/Undated folder", 2023, None, None),
+        ] {
+            let album = after.0.iter().find(|album| album.id == id).unwrap();
+            assert_eq!(album.relative_path.as_deref(), Some(path));
+            assert!(!Path::new(album.relative_path.as_ref().unwrap()).is_absolute());
+            assert_eq!(
+                (album.release_year, album.release_month, album.release_day),
+                (year, month, day)
+            );
+            assert_eq!(album.album_type.as_deref(), Some("ALBUM"));
+            assert_eq!(album.cover_url, None);
+            let credits: Vec<_> = after
+                .2
+                .iter()
+                .filter(|credit| credit.album_id == id)
+                .map(|credit| (credit.artist_id.as_str(), credit.position))
+                .collect();
+            assert_eq!(credits, [("z-primary", 0), ("a-guest", 1)]);
+        }
+        let primary = after
+            .1
+            .iter()
+            .find(|artist| artist.id == "z-primary")
+            .unwrap();
+        assert_eq!(primary.name, "Primary Artist");
+        assert_eq!(
+            primary.profile_image_url.as_deref(),
+            Some("https://example.test/primary.jpg")
+        );
+        let guest = after
+            .1
+            .iter()
+            .find(|artist| artist.id == "a-guest")
+            .unwrap();
+        assert_eq!(guest.name, "Guest Artist");
+        assert_eq!(guest.profile_image_url, None);
+        assert_eq!(after.1.len(), 3);
+        assert_eq!(after.2.len(), 5);
+        assert!(source.metadata_calls.lock().unwrap().is_empty());
+        let mut searches = source.searches.lock().unwrap().clone();
+        searches.sort();
+        assert_eq!(
+            searches,
+            [
+                "Primary Artist Collaboration",
+                "Primary Artist Undated folder"
+            ]
+        );
+
+        let second = run_scan(&app).await;
+        let mut expected = completed;
+        expected["summary"]["albums_imported"] = 0.into();
+        expected["summary"]["locations_changed"] = 0.into();
+        expected["summary"]["unchanged_locations"] = 3.into();
+        assert_eq!(second, expected);
+        assert_eq!(catalog_rows(&db).await, after);
+        assert_eq!(source.searches.lock().unwrap().len(), 2);
+        assert!(source.metadata_calls.lock().unwrap().is_empty());
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
+    async fn issue37_scan_skips_ambiguity_duplicates_and_failures_without_losing_other_imports() {
+        let db = test_database().await;
+        db.execute_unprepared(
+            "CREATE TRIGGER reject_scan_album BEFORE INSERT ON album \
+             WHEN NEW.id = 'persistence' BEGIN SELECT RAISE(ABORT, 'test import failure'); END",
+        )
+        .await
+        .unwrap();
+        let music = tempfile::tempdir().unwrap();
+        create_scan_audio(
+            music.path(),
+            &[
+                "Primary Artist/Ambiguous",
+                "Primary Artist/Duplicate",
+                "Primary Artist/Duplicate (2024)",
+                "Primary Artist/Search failure",
+                "Primary Artist/Metadata failure",
+                "Primary Artist/Credits failure",
+                "Primary Artist/Cover failure",
+                "Primary Artist/Invalid date",
+                "Primary Artist/Empty credits",
+                "Primary Artist/Persistence failure",
+                "Primary Artist/No match",
+                "Primary Artist/Good",
+            ],
+        )
+        .await;
+        let mut albums = vec![
+            ScanAlbum::new("ambiguous-2024", "Ambiguous", "2024"),
+            ScanAlbum::new("ambiguous-2025", "Ambiguous", "2025"),
+            ScanAlbum::new("duplicate", "Duplicate", "2024"),
+            ScanAlbum::new("good", "Good", "2024-06"),
+            ScanAlbum::new("persistence", "Persistence failure", "2024"),
+        ];
+        for (id, title, failure) in [
+            ("metadata", "Metadata failure", "metadata"),
+            ("credits", "Credits failure", "credits"),
+            ("cover", "Cover failure", "cover"),
+            ("date", "Invalid date", "date"),
+            ("empty", "Empty credits", "empty-credits"),
+        ] {
+            let mut record = ScanAlbum::new(id, title, "2024");
+            record.failure = Some(failure);
+            albums.push(record);
+        }
+        let source = Arc::new(FakeTidalCatalog {
+            albums,
+            failed_searches: vec!["Primary Artist Search failure".to_owned()],
+            ..Default::default()
+        });
+        let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+        let completed = run_scan(&app).await;
+        assert_eq!(completed["phase"], "completed");
+        assert_eq!(completed["failure_reason"], serde_json::Value::Null);
+        assert_eq!(
+            completed["summary"],
+            serde_json::json!({
+                "album_directories_found": 12, "candidates_processed": 12, "candidates_total": 12,
+                "albums_imported": 4, "locations_attached": 0, "locations_changed": 0,
+                "unchanged_locations": 0, "locations_cleared": 0, "unmatched_candidates": 1,
+                "ambiguous_matches": 1, "duplicate_locations": 2, "skipped_directories": 8,
+                "failures": 4, "filesystem_errors": 0
+            })
+        );
+        let after = catalog_rows(&db).await;
+        assert_eq!(after.0.len(), 4);
+        for (id, path, month) in [
+            ("cover", "Primary Artist/Cover failure", None),
+            ("credits", "Primary Artist/Credits failure", None),
+            ("good", "Primary Artist/Good", Some(6)),
+            ("metadata", "Primary Artist/Metadata failure", None),
+        ] {
+            let album = after.0.iter().find(|album| album.id == id).unwrap();
+            assert_eq!(album.cover_url, None);
+            assert_eq!(album.relative_path.as_deref(), Some(path));
+            assert_eq!(
+                (album.release_year, album.release_month, album.release_day),
+                (2024, month, None)
+            );
+            let credits: Vec<_> = after
+                .2
+                .iter()
+                .filter(|credit| credit.album_id == id)
+                .map(|credit| (credit.artist_id.as_str(), credit.position))
+                .collect();
+            assert_eq!(credits, [("z-primary", 0), ("a-guest", 1)]);
+        }
+        assert!(source.metadata_calls.lock().unwrap().is_empty());
+        assert_eq!(after.1.len(), 2);
+        assert_eq!(after.2.len(), 8);
+        assert_eq!(source.searches.lock().unwrap().len(), 12);
+        assert_eq!(scan_status(&app).await, completed);
+
+        let second = run_scan(&app).await;
+        let mut expected = completed;
+        expected["summary"]["albums_imported"] = 0.into();
+        expected["summary"]["unchanged_locations"] = 4.into();
+        assert_eq!(second, expected);
+        assert_eq!(catalog_rows(&db).await, after);
+        assert_eq!(source.searches.lock().unwrap().len(), 20);
+        assert!(source.metadata_calls.lock().unwrap().is_empty());
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+
+    #[tokio::test]
     async fn catalog_scan_runs_in_the_background_and_retains_its_summary() {
         let db = test_database().await;
         insert_test_album(&db, "locked").await;
@@ -423,7 +924,11 @@ mod tests {
         let app = router(AppState {
             tidal: Tidal::new(String::new(), String::new()),
             queue,
-            scan: ScanCoordinator::new(music_directory.clone(), db.clone()),
+            scan: ScanCoordinator::new(
+                music_directory.clone(),
+                db.clone(),
+                Arc::new(EmptyTidalCatalog),
+            ),
             db: db.clone(),
         });
 
@@ -553,7 +1058,7 @@ mod tests {
         let app = router(AppState {
             tidal: Tidal::new(String::new(), String::new()),
             queue,
-            scan: ScanCoordinator::new(music_directory, db.clone()),
+            scan: ScanCoordinator::new(music_directory, db.clone(), Arc::new(EmptyTidalCatalog)),
             db: db.clone(),
         });
 
@@ -633,7 +1138,7 @@ mod tests {
         let app = router(AppState {
             tidal: Tidal::new(String::new(), String::new()),
             queue,
-            scan: ScanCoordinator::new(music_directory, db.clone()),
+            scan: ScanCoordinator::new(music_directory, db.clone(), Arc::new(EmptyTidalCatalog)),
             db: db.clone(),
         });
 
