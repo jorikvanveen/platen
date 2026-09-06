@@ -21,6 +21,10 @@ mod entity;
 mod routes;
 mod services;
 
+#[cfg(test)]
+#[path = "tests/mod.rs"]
+mod test_support;
+
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     let filter = EnvFilter::try_from_default_env()
