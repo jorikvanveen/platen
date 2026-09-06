@@ -20,6 +20,7 @@
 			? "All returned releases are already in your catalog"
 			: "No releases found."} />
 {:else}
+	<p>Available quality describes availability on Tidal, not the downloaded audio format.</p>
 	{#each groupAlbums(data.albums) as group}
 		<section class="release-group">
 			<h2>{group.label}</h2>
@@ -32,7 +33,7 @@
 					{#snippet action()}
 						<AddAlbumButton albumId={album.id} />
 					{/snippet}
-					<ReleaseRow title={album.title} {metadata} {action} />
+					<ReleaseRow title={album.title} {metadata} {action} discovery={album} />
 				{/each}
 			</div>
 		</section>

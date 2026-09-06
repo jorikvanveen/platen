@@ -36,6 +36,8 @@ fn record(id: &str, title: &str, date: &str) -> Record {
             cover_url: None,
             popularity: 0.0,
             r#type: "ALBUM".into(),
+            explicit: None,
+            media_tags: None,
         },
         artists: vec![credit("primary", "AC/DC"), credit("guest", "Guest")],
         search_title: None,
@@ -113,6 +115,8 @@ impl TidalCatalog for FakeCatalog {
                     .clone()
                     .unwrap_or_else(|| record.artists.clone()),
                 r#type: record.album.r#type.clone(),
+                explicit: record.album.explicit,
+                media_tags: record.album.media_tags.clone(),
             })
             .collect())
     }

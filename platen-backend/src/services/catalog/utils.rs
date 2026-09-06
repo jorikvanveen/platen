@@ -74,6 +74,8 @@ impl TryFrom<ResolvedTidalSearchedAlbum> for PreparedAlbum {
                 release_date: hit.release_date,
                 popularity: hit.popularity,
                 r#type: hit.r#type,
+                explicit: hit.explicit,
+                media_tags: hit.media_tags,
             },
             hit.artists,
         )

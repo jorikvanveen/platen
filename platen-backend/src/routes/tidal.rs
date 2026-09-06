@@ -35,6 +35,9 @@ pub mod dto {
         pub album_type: String,
         pub release_date: Option<String>,
         pub popularity: f64,
+        pub explicit: Option<bool>,
+        pub media_tags: Option<Vec<String>>,
+        pub available_quality: Option<String>,
     }
 
     #[derive(Debug, Serialize, Deserialize, TS)]
@@ -62,6 +65,9 @@ pub mod dto {
         pub release_date: Option<String>,
         pub popularity: f64,
         pub artists: Vec<TidalArtist>,
+        pub explicit: Option<bool>,
+        pub media_tags: Option<Vec<String>>,
+        pub available_quality: Option<String>,
     }
 }
 
@@ -78,6 +84,10 @@ impl From<services::tidal::TidalArtist> for dto::TidalArtist {
 impl From<services::tidal::TidalAlbum> for dto::TidalAlbum {
     fn from(a: services::tidal::TidalAlbum) -> Self {
         dto::TidalAlbum {
+            available_quality: services::tidal::available_quality(a.media_tags.as_deref())
+                .map(str::to_owned),
+            explicit: a.explicit,
+            media_tags: a.media_tags,
             id: a.id,
             title: a.title,
             cover_url: a.cover_url,
@@ -91,6 +101,10 @@ impl From<services::tidal::TidalAlbum> for dto::TidalAlbum {
 impl From<services::tidal::ResolvedTidalSearchedAlbum> for dto::TidalAlbumSearchHit {
     fn from(a: services::tidal::ResolvedTidalSearchedAlbum) -> Self {
         dto::TidalAlbumSearchHit {
+            available_quality: services::tidal::available_quality(a.media_tags.as_deref())
+                .map(str::to_owned),
+            explicit: a.explicit,
+            media_tags: a.media_tags,
             id: a.id,
             title: a.title,
             cover_url: a.cover_url,

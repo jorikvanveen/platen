@@ -12,6 +12,7 @@ const artist: Artist = { id: "artist", name: "Example artist", profile_image_url
 const album: TidalAlbumSearchHit = {
 	id: "edition-2", title: "Available edition", cover_url: null,
 	album_type: "ALBUM", release_date: "2026-01-01", popularity: 0, artists: [artist],
+	explicit: null, media_tags: null, available_quality: null,
 };
 
 function searchEvent(fetch: typeof globalThis.fetch, query = "edition") {
@@ -79,6 +80,43 @@ describe("Album discovery loaders", () => {
 });
 
 describe("Album discovery rendering", () => {
+	it.each([
+		{ explicit: true, media_tags: ["LOSSLESS"], available_quality: "LOSSLESS", label: "Explicit" },
+		{ explicit: false, media_tags: ["HIRES_LOSSLESS"], available_quality: "HIRES_LOSSLESS", label: "Not explicit" },
+		{ explicit: null, media_tags: ["LOSSLESS", "HIRES_LOSSLESS"], available_quality: "HIRES_LOSSLESS", label: "Unknown" },
+		{ explicit: true, media_tags: ["FUTURE", "LOSSLESS"], available_quality: "LOSSLESS", label: "Explicit" },
+		{ explicit: true, media_tags: ["DOLBY_ATMOS"], available_quality: "DOLBY_ATMOS", label: "Explicit" },
+		{ explicit: false, media_tags: ["LOSSLESS", "DOLBY_ATMOS"], available_quality: "LOSSLESS + DOLBY_ATMOS", label: "Not explicit" },
+		{ explicit: null, media_tags: ["DOLBY_ATMOS", "HIRES_LOSSLESS", "LOSSLESS", "FUTURE"], available_quality: "HIRES_LOSSLESS + DOLBY_ATMOS", label: "Unknown" },
+		{ explicit: null, media_tags: ["FUTURE", "DOLBY_ATMOS"], available_quality: "DOLBY_ATMOS", label: "Unknown" },
+		{ explicit: null, media_tags: ["FUTURE"], available_quality: null, label: "Unknown" },
+		{ explicit: null, media_tags: [], available_quality: null, label: "Unknown" },
+		{ explicit: null, media_tags: null, available_quality: null, label: "Unknown" },
+	])("renders discovery metadata without reinterpreting raw tags: %j", async ({ label, ...metadata }) => {
+		const albums = [{ ...album, ...metadata }];
+		const searchFetch = vi.fn().mockResolvedValue(Response.json({ albums, returned_count: 1 }));
+		const releaseFetch = vi.fn().mockResolvedValueOnce(Response.json(artist))
+			.mockResolvedValueOnce(Response.json({ artist, albums, returned_count: 1 }));
+		const searchData = await loadSearch(searchEvent(searchFetch));
+		const releaseData = await loadReleases(releasesEvent(releaseFetch));
+		const expectedSearch = { query: "edition", albums, returnedCount: 1 };
+		const expectedReleases = { artist, albums, returnedCount: 1 };
+		expect(searchData).toEqual(expectedSearch);
+		expect(releaseData).toEqual(expectedReleases);
+		for (const html of [
+			render(SearchPage, { props: { data: expectedSearch, params: {} } }).body,
+			render(ReleasesPage, { props: { data: expectedReleases, params: { artist_id: artist.id } } }).body,
+		]) {
+			expect(html).toMatch(new RegExp(`<dd[^>]*>${label}</dd>`));
+			const displayedValues = [...html.matchAll(/<dd[^>]*>(.*?)<\/dd>/g)].map(match => match[1]);
+			expect(displayedValues).toContain(metadata.available_quality ?? "Unknown");
+			expect(html).toContain("Available quality");
+			expect(html).toContain("not the downloaded audio format");
+			expect(html).not.toContain("Clean");
+			expect(html).not.toContain("FUTURE");
+			if (metadata.explicit === null) expect(html).not.toContain("Not explicit");
+		}
+	});
 	it.each([0, 2])("distinguishes empty search responses from all-catalog responses with count %i", (returnedCount) => {
 		const html = render(SearchPage, {
 			props: { data: { query: "edition", albums: [], returnedCount }, params: {} },

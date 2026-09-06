@@ -35,6 +35,7 @@
 					? "All returned matches are already in your catalog"
 					: `No albums matched "${data.query}".`} />
 	{:else}
+		<p>Available quality describes availability on Tidal, not the downloaded audio format.</p>
 		<div class="results">
 			{#each data.albums as album (album.id)}
 				{#snippet metadata()}
@@ -45,7 +46,7 @@
 				{#snippet action()}
 					<AddAlbumButton albumId={album.id} />
 				{/snippet}
-				<ReleaseRow title={album.title} {metadata} {action} />
+				<ReleaseRow title={album.title} {metadata} {action} discovery={album} />
 			{/each}
 		</div>
 	{/if}

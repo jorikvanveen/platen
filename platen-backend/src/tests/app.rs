@@ -45,6 +45,8 @@ impl ScanAlbum {
                 release_date: Some(date.to_owned()),
                 popularity: 0.0,
                 r#type: "ALBUM".to_owned(),
+                explicit: None,
+                media_tags: None,
             },
             artists: vec![
                 TidalArtist {
@@ -113,6 +115,8 @@ impl TidalCatalog for FakeTidalCatalog {
                     record.artists.clone()
                 },
                 r#type: record.album.r#type.clone(),
+                explicit: record.album.explicit,
+                media_tags: record.album.media_tags.clone(),
             })
             .collect())
     }

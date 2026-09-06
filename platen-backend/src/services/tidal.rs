@@ -504,6 +504,30 @@ pub struct TidalArtist {
     pub profile_image_url: Option<String>,
 }
 
+pub fn available_quality(media_tags: Option<&[String]>) -> Option<&'static str> {
+    let mut quality = None;
+    let mut has_atmos = false;
+    for tag in media_tags.unwrap_or_default() {
+        match tag.as_str() {
+            "HIRES_LOSSLESS" => quality = Some("HIRES_LOSSLESS"),
+            "LOSSLESS" => {
+                if quality.is_none() {
+                    quality = Some("LOSSLESS");
+                }
+            }
+            "DOLBY_ATMOS" => has_atmos = true,
+            _ => tracing::warn!(media_tag = %tag, "Unhandled Tidal media tag"),
+        }
+    }
+    // Atmos describes spatial audio availability, not a tier above lossless.
+    match (quality, has_atmos) {
+        (Some("HIRES_LOSSLESS"), true) => Some("HIRES_LOSSLESS + DOLBY_ATMOS"),
+        (Some("LOSSLESS"), true) => Some("LOSSLESS + DOLBY_ATMOS"),
+        (None, true) => Some("DOLBY_ATMOS"),
+        _ => quality,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TidalAlbum {
     pub id: String,
@@ -512,6 +536,8 @@ pub struct TidalAlbum {
     pub release_date: Option<String>,
     pub popularity: f64,
     pub r#type: String,
+    pub explicit: Option<bool>,
+    pub media_tags: Option<Vec<String>>,
 }
 
 impl TidalAlbum {
@@ -523,6 +549,8 @@ impl TidalAlbum {
             release_date: attr.release_date,
             popularity: attr.popularity,
             r#type: attr.r#type,
+            explicit: attr.explicit,
+            media_tags: attr.media_tags,
         }
     }
 }
@@ -536,6 +564,8 @@ pub struct ResolvedTidalSearchedAlbum {
     pub popularity: f64,
     pub artists: Vec<TidalArtist>,
     pub r#type: String,
+    pub explicit: Option<bool>,
+    pub media_tags: Option<Vec<String>>,
 }
 
 fn resolve_album_search(
@@ -618,6 +648,8 @@ fn resolve_searched_album(
         popularity: attr.popularity,
         artists,
         r#type: attr.r#type.clone(),
+        explicit: attr.explicit,
+        media_tags: attr.media_tags.clone(),
     }
 }
 
@@ -739,6 +771,8 @@ mod tidal_response {
         pub release_date: Option<String>,
         pub popularity: f64,
         pub r#type: String,
+        pub explicit: Option<bool>,
+        pub media_tags: Option<Vec<String>>,
     }
 
     #[derive(Debug, Deserialize)]

@@ -8,6 +8,162 @@ use super::{
 };
 
 #[test]
+fn discovery_contract_preserves_metadata_and_selects_the_highest_known_quality() {
+    use crate::routes::tidal::dto;
+    use serde_json::{Value, json};
+
+    for (explicit, tags, quality) in [
+        (Some(true), Some(vec!["LOSSLESS"]), Some("LOSSLESS")),
+        (
+            Some(false),
+            Some(vec!["HIRES_LOSSLESS"]),
+            Some("HIRES_LOSSLESS"),
+        ),
+        (
+            None,
+            Some(vec!["LOSSLESS", "HIRES_LOSSLESS"]),
+            Some("HIRES_LOSSLESS"),
+        ),
+        (
+            Some(true),
+            Some(vec!["HIRES_LOSSLESS", "LOSSLESS", "FUTURE"]),
+            Some("HIRES_LOSSLESS"),
+        ),
+        (
+            Some(false),
+            Some(vec!["FUTURE", "LOSSLESS"]),
+            Some("LOSSLESS"),
+        ),
+        (None, Some(vec!["DOLBY_ATMOS"]), Some("DOLBY_ATMOS")),
+        (
+            None,
+            Some(vec!["DOLBY_ATMOS", "LOSSLESS"]),
+            Some("LOSSLESS + DOLBY_ATMOS"),
+        ),
+        (
+            None,
+            Some(vec!["LOSSLESS", "DOLBY_ATMOS"]),
+            Some("LOSSLESS + DOLBY_ATMOS"),
+        ),
+        (
+            None,
+            Some(vec!["HIRES_LOSSLESS", "DOLBY_ATMOS"]),
+            Some("HIRES_LOSSLESS + DOLBY_ATMOS"),
+        ),
+        (
+            None,
+            Some(vec!["DOLBY_ATMOS", "LOSSLESS", "HIRES_LOSSLESS"]),
+            Some("HIRES_LOSSLESS + DOLBY_ATMOS"),
+        ),
+        (
+            None,
+            Some(vec!["HIRES_LOSSLESS", "LOSSLESS", "DOLBY_ATMOS", "FUTURE"]),
+            Some("HIRES_LOSSLESS + DOLBY_ATMOS"),
+        ),
+        (
+            None,
+            Some(vec!["FUTURE", "DOLBY_ATMOS", "DOLBY_ATMOS"]),
+            Some("DOLBY_ATMOS"),
+        ),
+        (None, Some(vec!["FUTURE"]), None),
+        (None, Some(vec![]), None),
+        (None, None, None),
+    ] {
+        let mut attributes = json!({"title": "Same title", "type": "ALBUM", "popularity": 0.5});
+        if let Some(explicit) = explicit {
+            attributes["explicit"] = json!(explicit);
+        }
+        if let Some(tags) = &tags {
+            attributes["mediaTags"] = json!(tags);
+        }
+        let included = json!([
+            {"id": "edition-2", "type": "albums", "attributes": attributes},
+            {"id": "edition-1", "type": "albums", "attributes": attributes}
+        ]);
+        let search: AlbumSearch = serde_json::from_value(json!({
+            "data": [{"relationships": {"albums": {"data": [{"id": "edition-2"}, {"id": "edition-1"}]}}}],
+            "included": included
+        })).unwrap();
+        let search_albums: Vec<Value> = resolve_album_search(&search)
+            .unwrap()
+            .into_iter()
+            .map(|album| serde_json::to_value(dto::TidalAlbumSearchHit::from(album)).unwrap())
+            .collect();
+        let releases: ArtistAlbumsRelationshipDocument =
+            serde_json::from_value(json!({"included": included})).unwrap();
+        let release_albums: Vec<Value> = releases
+            .included
+            .into_iter()
+            .map(|resource| {
+                let AlbumSearchIncluded::Album { id, attributes, .. } = resource else {
+                    panic!("expected album");
+                };
+                serde_json::to_value(dto::TidalAlbum::from(super::TidalAlbum::from(
+                    id, attributes, None,
+                )))
+                .unwrap()
+            })
+            .collect();
+        for albums in [search_albums, release_albums] {
+            assert_eq!(
+                albums
+                    .iter()
+                    .map(|album| album["id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                ["edition-2", "edition-1"]
+            );
+            for album in albums {
+                assert_eq!(album["explicit"], json!(explicit));
+                assert_eq!(album["media_tags"], json!(tags));
+                assert_eq!(album["available_quality"], json!(quality));
+            }
+        }
+    }
+}
+
+#[test]
+fn unknown_media_tags_are_logged_even_after_the_highest_quality_is_found() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct LogWriter(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let writer = LogWriter(output.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let tags = [
+            "HIRES_LOSSLESS".to_owned(),
+            "DOLBY_ATMOS".to_owned(),
+            "FUTURE_CODEC".to_owned(),
+            "OTHER_CODEC".to_owned(),
+        ];
+        assert_eq!(
+            super::available_quality(Some(&tags)),
+            Some("HIRES_LOSSLESS + DOLBY_ATMOS")
+        );
+    });
+    let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("FUTURE_CODEC"));
+    assert!(logs.contains("OTHER_CODEC"));
+    assert!(logs.contains("WARN"));
+    assert!(!logs.contains("DOLBY_ATMOS"));
+    assert!(!logs.contains("HIRES_LOSSLESS"));
+}
+
+#[test]
 fn catalog_requests_include_the_configured_country() {
     for country_code in ["NL", "US"] {
         let tidal = super::Tidal::new(String::new(), String::new(), country_code.to_owned());

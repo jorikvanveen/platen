@@ -23,6 +23,8 @@ impl Default for FakeCatalog {
                 release_date: Some("2024-02-29".into()),
                 popularity: 0.0,
                 r#type: "ALBUM".into(),
+                explicit: None,
+                media_tags: None,
             },
             artists: vec![
                 TidalArtist {
