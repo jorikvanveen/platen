@@ -60,6 +60,10 @@ A streaming service that acts as platen's identity authority, its
 name-based search engine, and its source of album metadata. Tidal artist
 and album IDs identify catalog Artists and Albums.
 
+**Territory**:
+The single configured country that determines Tidal availability for Platen.
+_Avoid_: region, market
+
 **Antra**:
 A download service. Given a Tidal album URL, fetches lossless audio and hands
 it to platen as a file. Download depends on the Album's Tidal ID being valid
