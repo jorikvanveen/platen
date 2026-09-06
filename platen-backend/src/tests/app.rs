@@ -263,7 +263,7 @@ async fn insert_test_album(db: &DatabaseConnection, id: &str) {
 
 fn app_state(db: DatabaseConnection, queue: DownloadQueue) -> AppState {
     AppState {
-        tidal: Tidal::new(String::new(), String::new()),
+        tidal: Tidal::new(String::new(), String::new(), "NL".to_owned()),
         queue,
         scan: ScanCoordinator::new(
             MusicDirectory::new(temp_music_dir()),
@@ -379,7 +379,7 @@ fn scan_app(
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
     let app = router(AppState {
-        tidal: Tidal::new(String::new(), String::new()),
+        tidal: Tidal::new(String::new(), String::new(), "NL".to_owned()),
         queue,
         scan: ScanCoordinator::new(music_directory, db.clone(), source),
         db: db.clone(),
@@ -862,7 +862,7 @@ async fn catalog_scan_runs_in_the_background_and_retains_its_summary() {
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), downloader);
     let app = router(AppState {
-        tidal: Tidal::new(String::new(), String::new()),
+        tidal: Tidal::new(String::new(), String::new(), "NL".to_owned()),
         queue,
         scan: ScanCoordinator::new(
             music_directory.clone(),
@@ -996,7 +996,7 @@ async fn catalog_scan_reconciles_locations_without_changing_metadata_and_is_idem
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
     let app = router(AppState {
-        tidal: Tidal::new(String::new(), String::new()),
+        tidal: Tidal::new(String::new(), String::new(), "NL".to_owned()),
         queue,
         scan: ScanCoordinator::new(music_directory, db.clone(), Arc::new(EmptyTidalCatalog)),
         db: db.clone(),
@@ -1076,7 +1076,7 @@ async fn catalog_scan_clears_paths_when_the_music_root_is_missing_even_with_fail
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
     let app = router(AppState {
-        tidal: Tidal::new(String::new(), String::new()),
+        tidal: Tidal::new(String::new(), String::new(), "NL".to_owned()),
         queue,
         scan: ScanCoordinator::new(music_directory, db.clone(), Arc::new(EmptyTidalCatalog)),
         db: db.clone(),

@@ -63,10 +63,11 @@ pub struct Tidal {
     auth: Arc<Mutex<TidalAuth>>,
     client_id: String,
     client_secret: String,
+    country_code: String,
 }
 
 impl Tidal {
-    pub fn new(client_id: String, client_secret: String) -> Self {
+    pub fn new(client_id: String, client_secret: String, country_code: String) -> Self {
         Self {
             client: reqwest::ClientBuilder::new().build().expect(
                 "reqwest client build only fails on TLS misconfiguration, which is static here",
@@ -77,7 +78,23 @@ impl Tidal {
             })),
             client_id,
             client_secret,
+            country_code,
         }
+    }
+
+    fn catalog_request(&self, url: &str) -> Result<RequestBuilder, TidalError> {
+        let mut url = Url::parse(url).map_err(|_| TidalError::UnexpectedResponse)?;
+        let query: Vec<_> = url
+            .query_pairs()
+            .filter(|(name, _)| name != "countryCode")
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+        // Pagination links must not override the configured territory or add a second country.
+        url.query_pairs_mut()
+            .clear()
+            .extend_pairs(query)
+            .append_pair("countryCode", &self.country_code);
+        Ok(self.client.get(url))
     }
 
     pub async fn login(&self) -> Result<(), TidalError> {
@@ -177,7 +194,7 @@ impl Tidal {
         query: &str,
     ) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/searchResults");
-        let request = self.client.get(url).query(&[
+        let request = self.catalog_request(&url)?.query(&[
             ("filter[query]", query),
             (
                 "include",
@@ -197,7 +214,7 @@ impl Tidal {
 
     pub async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}");
-        let resp = self.send_with_retry(self.client.get(url)).await?;
+        let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
             return Err(TidalError::UnexpectedResponse);
@@ -210,7 +227,7 @@ impl Tidal {
 
     pub async fn get_album_cover(&self, id: &str) -> Result<Option<String>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=coverArt");
-        let resp = self.send_with_retry(self.client.get(url)).await?;
+        let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
             return Err(TidalError::UnexpectedResponse);
@@ -248,7 +265,7 @@ impl Tidal {
                     )
                 }
             };
-            let resp = self.send_with_retry(self.client.get(url)).await?;
+            let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
             if !resp.status().is_success() {
                 tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
                 return Err(TidalError::UnexpectedResponse);
@@ -286,7 +303,7 @@ impl Tidal {
 
     pub async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=artists,artists.profileArt");
-        let resp = self.send_with_retry(self.client.get(url)).await?;
+        let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
             return Err(TidalError::UnexpectedResponse);
@@ -329,7 +346,7 @@ impl Tidal {
 
     pub async fn get_artist(&self, id: &str) -> Result<TidalArtist, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/artists/{id}?include=profileArt");
-        let resp = self.send_with_retry(self.client.get(url)).await?;
+        let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
         if !resp.status().is_success() {
             tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
             return Err(TidalError::UnexpectedResponse);
@@ -350,7 +367,7 @@ impl Tidal {
 
     pub async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/searchResults");
-        let request = self.client.get(url).query(&[
+        let request = self.catalog_request(&url)?.query(&[
             ("filter[query]", query),
             ("include", "artists,artists.profileArt"),
         ]);

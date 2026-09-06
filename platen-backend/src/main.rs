@@ -39,6 +39,7 @@ async fn main() -> color_eyre::Result<()> {
     let tidal = Tidal::new(
         config.tidal_client_id.clone(),
         config.tidal_client_secret.clone(),
+        config.tidal_country_code.clone(),
     );
     tidal.login().await?;
 

@@ -8,6 +8,103 @@ use super::{
 };
 
 #[test]
+fn catalog_requests_include_the_configured_country() {
+    for country_code in ["NL", "US"] {
+        let tidal = super::Tidal::new(String::new(), String::new(), country_code.to_owned());
+        for path in [
+            "/searchResults",
+            "/artists/123?include=profileArt",
+            "/artists/123/relationships/albums?include=albums,albums.coverArt",
+            "/albums/456",
+            "/albums/456?include=coverArt",
+            "/albums/456?include=artists,artists.profileArt",
+        ] {
+            let url = format!("{}{path}", super::TIDAL_BASE_URL);
+            let original_url = url::Url::parse(&url).unwrap();
+            let request = tidal.catalog_request(&url).unwrap().build().unwrap();
+            let query: Vec<_> = request.url().query_pairs().collect();
+            assert_eq!(request.method(), reqwest::Method::GET);
+            assert_eq!(request.url().path(), original_url.path());
+            assert_eq!(
+                query
+                    .iter()
+                    .filter(|(name, _)| name == "countryCode")
+                    .count(),
+                1
+            );
+            assert!(
+                query
+                    .iter()
+                    .any(|(name, value)| name == "countryCode" && value == country_code)
+            );
+            for pair in original_url.query_pairs() {
+                assert!(query.contains(&pair));
+            }
+        }
+    }
+}
+
+#[test]
+fn pagination_preserves_the_cursor_and_enforces_one_configured_country() {
+    let tidal = super::Tidal::new(String::new(), String::new(), "NL".to_owned());
+    for country_query in ["", "&countryCode=NL", "&countryCode=US&countryCode=GB"] {
+        let url = format!(
+            "{}/artists/123/relationships/albums?page%5Bcursor%5D=a%2Bb%2F%3D&include=albums,albums.coverArt{country_query}",
+            super::TIDAL_BASE_URL
+        );
+        let request = tidal.catalog_request(&url).unwrap().build().unwrap();
+        let query: Vec<_> = request.url().query_pairs().collect();
+        assert_eq!(query.len(), 3);
+        assert!(
+            query
+                .iter()
+                .any(|(name, value)| name == "page[cursor]" && value == "a+b/=")
+        );
+        assert!(
+            query
+                .iter()
+                .any(|(name, value)| name == "include" && value == "albums,albums.coverArt")
+        );
+        assert!(
+            query
+                .iter()
+                .any(|(name, value)| name == "countryCode" && value == "NL")
+        );
+    }
+}
+
+#[test]
+fn search_parameters_are_preserved_alongside_the_country() {
+    let tidal = super::Tidal::new(String::new(), String::new(), "NL".to_owned());
+    let request = tidal
+        .catalog_request(&format!("{}/searchResults", super::TIDAL_BASE_URL))
+        .unwrap()
+        .query(&[
+            ("filter[query]", "Artist & Album"),
+            ("include", "albums.artists"),
+        ])
+        .build()
+        .unwrap();
+    let query: Vec<_> = request.url().query_pairs().collect();
+    assert_eq!(query.len(), 3);
+    assert!(
+        query
+            .iter()
+            .any(|(name, value)| name == "countryCode" && value == "NL")
+    );
+    assert!(
+        query
+            .iter()
+            .any(|(name, value)| name == "filter[query]" && value == "Artist & Album")
+    );
+    assert!(
+        query
+            .iter()
+            .any(|(name, value)| name == "include" && value == "albums.artists")
+    );
+}
+
+#[test]
 fn resolves_album_artists_in_relationship_order() {
     let response: AlbumSearch = serde_json::from_value(serde_json::json!({
         "data": [{
