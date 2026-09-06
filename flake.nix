@@ -5,7 +5,7 @@
   outputs = { self, nixpkgs, utils }: utils.lib.eachDefaultSystem (system:
     let
       pkgs = nixpkgs.legacyPackages.${system};
-      version = "0.0.3";
+      version = "0.1.0";
     in
     {
       devShell = pkgs.mkShell {
