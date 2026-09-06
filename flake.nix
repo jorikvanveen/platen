@@ -5,7 +5,7 @@
   outputs = { self, nixpkgs, utils }: utils.lib.eachDefaultSystem (system:
     let
       pkgs = nixpkgs.legacyPackages.${system};
-      version = "0.1.0";
+      version = "0.1.1";
     in
     {
       devShell = pkgs.mkShell {
@@ -36,9 +36,14 @@
           pkgs.pkg-config
         ];
 
-        buildInputs = [
+        nativeCheckInputs = [
+          pkgs.zip
           pkgs.unzip
         ];
+
+        preCheck = ''
+          export SSL_CERT_FILE="${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+        '';
         
         PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
       };
