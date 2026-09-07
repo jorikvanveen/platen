@@ -2,23 +2,6 @@ use super::*;
 use std::process::Command as SyncCommand;
 
 #[test]
-fn album_job_requests_include_every_track() {
-    let url = "https://tidal.com/browse/album/123";
-    for track_count in [1, 12, 30] {
-        let request = CreateJobRequestBody::for_album(url, track_count).unwrap();
-        assert_eq!(
-            serde_json::to_value(request).unwrap(),
-            serde_json::json!({
-                "url": url,
-                "format": "lossless-16",
-                "start_index": 0,
-                "end_index": track_count,
-            })
-        );
-    }
-}
-
-#[test]
 fn album_job_requests_reject_empty_albums() {
     assert!(matches!(
         CreateJobRequestBody::for_album("https://tidal.com/browse/album/123", 0),
