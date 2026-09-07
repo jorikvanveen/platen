@@ -5,6 +5,44 @@ use crate::entity::album;
 use crate::services::tidal::ResolvedTidalSearchedAlbum;
 use migration::MigratorTrait;
 
+#[test]
+fn parse_media_tags_preserves_string_arrays_and_rejects_invalid_json() {
+    use serde_json::json;
+
+    for (stored_tags, expected_tags) in [
+        (None, None),
+        (Some(json!(null)), None),
+        (Some(json!("LOSSLESS")), None),
+        (Some(json!({"tags": ["LOSSLESS"]})), None),
+        (Some(json!(["LOSSLESS", 42])), None),
+        (Some(json!([null])), None),
+        (Some(json!([])), Some(vec![])),
+        (
+            Some(json!(["LOSSLESS", "FUTURE_TAG", "DOLBY_ATMOS"])),
+            Some(vec![
+                "LOSSLESS".to_owned(),
+                "FUTURE_TAG".to_owned(),
+                "DOLBY_ATMOS".to_owned(),
+            ]),
+        ),
+    ] {
+        let album = album::Model {
+            id: "album-id".to_owned(),
+            title: "Album title".to_owned(),
+            album_type: None,
+            release_year: 2026,
+            release_month: None,
+            release_day: None,
+            cover_url: None,
+            relative_path: None,
+            explicit: None,
+            media_tags: stored_tags.clone(),
+        };
+        assert_eq!(parse_media_tags(&album), expected_tags);
+        assert_eq!(album.media_tags, stored_tags);
+    }
+}
+
 struct FakeCatalog {
     album: TidalAlbum,
     artists: Vec<TidalArtist>,

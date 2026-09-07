@@ -1307,6 +1307,164 @@ async fn download_route_accepts_before_worker_finishes() {
 }
 
 #[tokio::test]
+async fn download_responses_resolve_current_catalog_metadata() {
+    use serde_json::json;
+
+    for (explicit, media_tags, quality) in [
+        (Some(true), Some(json!(["LOSSLESS"])), Some("LOSSLESS")),
+        (
+            Some(false),
+            Some(json!(["HIRES_LOSSLESS"])),
+            Some("HIRES_LOSSLESS"),
+        ),
+        (
+            None,
+            Some(json!(["LOSSLESS", "HIRES_LOSSLESS"])),
+            Some("HIRES_LOSSLESS"),
+        ),
+        (
+            Some(true),
+            Some(json!(["FUTURE", "LOSSLESS"])),
+            Some("LOSSLESS"),
+        ),
+        (
+            Some(false),
+            Some(json!(["DOLBY_ATMOS"])),
+            Some("DOLBY_ATMOS"),
+        ),
+        (
+            Some(true),
+            Some(json!(["LOSSLESS", "DOLBY_ATMOS"])),
+            Some("LOSSLESS + DOLBY_ATMOS"),
+        ),
+        (
+            None,
+            Some(json!([
+                "DOLBY_ATMOS",
+                "HIRES_LOSSLESS",
+                "LOSSLESS",
+                "FUTURE"
+            ])),
+            Some("HIRES_LOSSLESS + DOLBY_ATMOS"),
+        ),
+        (None, Some(json!(["FUTURE"])), None),
+        (Some(false), Some(json!([])), None),
+        (None, None, None),
+    ] {
+        let db = test_database().await;
+        for album_id in ["album-1", "album-2"] {
+            insert_test_album(&db, album_id).await;
+            album::ActiveModel {
+                id: Set(album_id.to_owned()),
+                explicit: Set(explicit),
+                media_tags: Set(media_tags.clone()),
+                ..Default::default()
+            }
+            .update(&db)
+            .await
+            .unwrap();
+        }
+        let downloader = GateDownloader::new();
+        let (queue, worker_handle) = DownloadQueue::start(
+            db.clone(),
+            MusicDirectory::new(temp_music_dir()),
+            downloader.clone(),
+        );
+        let app = router(app_state(db.clone(), queue));
+        let assert_metadata = |job: &serde_json::Value| {
+            assert_eq!(job.get("explicit"), Some(&json!(explicit)));
+            assert_eq!(job.get("available_quality"), Some(&json!(quality)));
+            assert_eq!(
+                job["release_name"],
+                format!("Album {}", job["album_id"].as_str().unwrap())
+            );
+        };
+        assert_metadata(&enqueue(&app, "album-1").await);
+        tokio::time::timeout(Duration::from_secs(1), downloader.started.notified())
+            .await
+            .unwrap();
+        let queued = enqueue(&app, "album-2").await;
+        assert_metadata(&queued);
+        let body = downloads(&app).await;
+        assert_eq!(body["active"][0]["status"], "running");
+        assert_eq!(body["active"][1]["status"], "queued");
+        for job in body["active"].as_array().unwrap() {
+            assert_metadata(job);
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/downloads/{}", queued["id"].as_str().unwrap()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let bytes = to_bytes(response.into_body(), 16 * 1024).await.unwrap();
+        let cancelled: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_metadata(&cancelled);
+        assert_eq!(cancelled["status"], "cancelled");
+        downloader.release.notify_one();
+        let body = wait_for_history(&app, 2).await;
+        for job in body["history"].as_array().unwrap() {
+            assert_metadata(job);
+        }
+
+        album::ActiveModel {
+            id: Set("album-2".to_owned()),
+            title: Set("Updated catalog title".to_owned()),
+            explicit: Set(Some(true)),
+            media_tags: Set(Some(json!(["HIRES_LOSSLESS", "DOLBY_ATMOS"]))),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
+        let body = downloads(&app).await;
+        let updated = body["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["album_id"] == "album-2")
+            .unwrap();
+        assert_eq!(updated["release_name"], "Updated catalog title");
+        assert_eq!(updated["explicit"], true);
+        assert_eq!(updated["available_quality"], "HIRES_LOSSLESS + DOLBY_ATMOS");
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/albums/album-2")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = downloads(&app).await;
+        let retained = body["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["album_id"] == "album-2")
+            .unwrap();
+        assert_eq!(retained["id"], queued["id"]);
+        assert_eq!(retained["status"], "cancelled");
+        for field in ["release_name", "explicit", "available_quality"] {
+            assert_eq!(retained.get(field), Some(&json!(null)));
+        }
+        worker_handle.abort();
+        let _ = worker_handle.await;
+    }
+}
+
+#[tokio::test]
 async fn downloaded_album_conflict_is_returned_before_enqueueing() {
     let db = test_database().await;
     insert_test_album(&db, "album-1").await;

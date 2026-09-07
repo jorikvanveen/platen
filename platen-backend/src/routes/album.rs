@@ -87,13 +87,7 @@ pub mod dto {
 }
 
 fn album_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
-    let media_tags = model.media_tags.and_then(|tags| {
-        serde_json::from_value::<Vec<String>>(tags)
-            .inspect_err(|error| {
-                tracing::warn!(album_id = %model.id, %error, "Invalid stored media tags");
-            })
-            .ok()
-    });
+    let media_tags = catalog::parse_media_tags(&model);
     dto::Album {
         available_quality: services::tidal::available_quality(media_tags.as_deref())
             .map(str::to_owned),
@@ -369,7 +363,7 @@ pub async fn download(
     if album.relative_path.is_some() {
         return Err(StatusCode::CONFLICT);
     }
-    let release_name = Some(album.title);
+
     let job = queue.enqueue(album_id).await.map_err(|error| match error {
         services::download_queue::QueueError::Full => StatusCode::TOO_MANY_REQUESTS,
         services::download_queue::QueueError::WorkerStopped => {
@@ -377,9 +371,10 @@ pub async fn download(
             StatusCode::SERVICE_UNAVAILABLE
         }
     })?;
+
     Ok((
         StatusCode::ACCEPTED,
-        Json(DownloadJob::from_record(job, release_name)),
+        Json(DownloadJob::from_record(job, Some(&album))),
     ))
 }
 

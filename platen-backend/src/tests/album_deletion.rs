@@ -445,6 +445,15 @@ async fn running_selected_download_does_not_reject_deletion() {
 #[tokio::test]
 async fn queued_selected_download_is_not_cancelled_by_deletion() {
     let fixture = Fixture::new().await;
+    album::ActiveModel {
+        id: Set("selected".to_owned()),
+        explicit: Set(Some(true)),
+        media_tags: Set(Some(json!(["HIRES_LOSSLESS", "DOLBY_ATMOS"]))),
+        ..Default::default()
+    }
+    .update(&fixture.db)
+    .await
+    .unwrap();
     insert_test_album(&fixture.db, "other").await;
     fixture
         .state
@@ -468,6 +477,31 @@ async fn queued_selected_download_is_not_cancelled_by_deletion() {
         && job.status == crate::services::download_queue::JobStatus::Running));
     assert!(!history.iter().any(|job| job.album_id == "selected"));
     assert_eq!(*fixture.downloader.album_starts.lock().unwrap(), ["other"]);
+
+    let (status, body) = fixture.request("GET", "/downloads", "").await;
+    assert_eq!(status, StatusCode::OK);
+    let selected = body["active"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["album_id"] == "selected")
+        .unwrap();
+    assert_eq!(selected["status"], "queued");
+    for field in ["release_name", "explicit", "available_quality"] {
+        assert_eq!(selected.get(field), Some(&Value::Null));
+    }
+    let (status, cancelled) = fixture
+        .request(
+            "DELETE",
+            &format!("/downloads/{}", selected["id"].as_str().unwrap()),
+            "",
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cancelled["status"], "cancelled");
+    for field in ["release_name", "explicit", "available_quality"] {
+        assert_eq!(cancelled.get(field), Some(&Value::Null));
+    }
 }
 
 #[tokio::test]

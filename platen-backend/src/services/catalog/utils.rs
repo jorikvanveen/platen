@@ -13,6 +13,15 @@ use crate::{
     },
 };
 
+pub(crate) fn parse_media_tags(album: &album::Model) -> Option<Vec<String>> {
+    let tags = album.media_tags.as_ref()?;
+    <Vec<String> as serde::Deserialize>::deserialize(tags)
+        .inspect_err(|error| {
+            tracing::warn!(album_id = %album.id, %error, "Invalid stored media tags");
+        })
+        .ok()
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PrepareAlbumError {
     #[error(transparent)]

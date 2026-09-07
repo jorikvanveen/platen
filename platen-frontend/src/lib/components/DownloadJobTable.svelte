@@ -38,11 +38,14 @@
 	{#if jobs.length === 0}
 		<EmptyState message={emptyMessage} />
 	{:else}
+		<p>Available quality describes availability on Tidal, not the downloaded audio format.</p>
 		<div class="table-wrap">
 			<table>
 				<thead>
 					<tr>
 						<th scope="col">Album</th>
+						<th scope="col">Explicit</th>
+						<th scope="col">Available quality</th>
 						<th scope="col">Status</th>
 						{#if showFailureReason}
 							<th scope="col">Failure reason</th>
@@ -52,8 +55,11 @@
 				<tbody>
 					{#each jobs as job (job.id)}
 						<tr>
-							<td>{job.release_name ?? job.album_id}</td>
+							<td><span class="mobile-label">Album</span>{job.release_name ?? job.album_id}</td>
+							<td><span class="mobile-label">Explicit</span>{job.explicit === true ? "Explicit" : job.explicit === false ? "Not explicit" : "Unknown"}</td>
+							<td><span class="mobile-label">Available quality</span>{job.available_quality ?? "Unknown"}</td>
 							<td>
+								<span class="mobile-label">Status</span>
 								<div class="status-cell">
 									<span class="status">{job.status}</span>
 									{#if job.status === "queued" && onCancel}
@@ -71,7 +77,7 @@
 								</div>
 							</td>
 							{#if showFailureReason}
-								<td class="failure">{job.failure_reason ?? ""}</td>
+								<td class="failure"><span class="mobile-label">Failure reason</span>{job.failure_reason ?? ""}</td>
 							{/if}
 						</tr>
 					{/each}
@@ -93,6 +99,7 @@
 
 table {
 	width: 100%;
+	table-layout: fixed;
 	border-collapse: collapse;
 	border: 1px solid #302f38;
 	background: #19181e;
@@ -102,6 +109,8 @@ th,
 td {
 	padding: 0.85rem 1rem;
 	text-align: left;
+	vertical-align: top;
+	overflow-wrap: anywhere;
 }
 
 th {
@@ -119,6 +128,7 @@ tbody tr + tr {
 .status-cell {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 0.65rem;
 }
 
@@ -136,4 +146,38 @@ tbody tr + tr {
 .failure {
 	color: #d9a6a6;
 }
+	.mobile-label {
+		display: none;
+	}
+
+	@media (max-width: 800px) {
+		thead {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			overflow: hidden;
+			clip-path: inset(50%);
+			white-space: nowrap;
+		}
+
+		table, tbody, tr, td {
+			display: block;
+		}
+
+		tr {
+			padding: 0.5rem 0;
+		}
+
+		td {
+			padding: 0.4rem 1rem;
+		}
+
+		.mobile-label {
+			display: block;
+			color: #aaa7b6;
+			font-size: 0.8rem;
+			margin-bottom: 0.25rem;
+		}
+	}
 </style>

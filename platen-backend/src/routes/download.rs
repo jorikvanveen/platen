@@ -1,7 +1,11 @@
 use crate::{
     app::AppState,
     entity::album,
-    services::download_queue::{CancelError, JobRecord, JobStatus},
+    services::{
+        catalog,
+        download_queue::{CancelError, JobRecord, JobStatus},
+        tidal,
+    },
 };
 use axum::{
     Json,
@@ -32,6 +36,8 @@ pub mod dto {
         pub id: String,
         pub album_id: String,
         pub release_name: Option<String>,
+        pub explicit: Option<bool>,
+        pub available_quality: Option<String>,
         pub status: DownloadJobStatus,
         pub enqueued_at: DateTime<Utc>,
         pub started_at: Option<DateTime<Utc>>,
@@ -48,11 +54,14 @@ pub mod dto {
 }
 
 impl dto::DownloadJob {
-    pub(crate) fn from_record(job: JobRecord, release_name: Option<String>) -> Self {
+    pub(crate) fn from_record(job: JobRecord, album: Option<&album::Model>) -> Self {
+        let media_tags = album.and_then(catalog::parse_media_tags);
         Self {
             id: job.id,
             album_id: job.album_id,
-            release_name,
+            release_name: album.map(|album| album.title.clone()),
+            explicit: album.and_then(|album| album.explicit),
+            available_quality: tidal::available_quality(media_tags.as_deref()).map(str::to_owned),
             status: job.status.into(),
             enqueued_at: job.enqueued_at,
             started_at: job.started_at,
@@ -82,15 +91,15 @@ pub async fn cancel(
         CancelError::NotFound => StatusCode::NOT_FOUND,
         CancelError::Running => StatusCode::CONFLICT,
     })?;
-    let release_name = match album::Entity::find_by_id(&job.album_id).one(&db).await {
-        Ok(album) => album.map(|album| album.title),
+    let album = match album::Entity::find_by_id(&job.album_id).one(&db).await {
+        Ok(album) => album,
         Err(error) => {
             tracing::error!("Could not load album for cancelled download: {error:#?}");
             None
         }
     };
 
-    Ok(Json(dto::DownloadJob::from_record(job, release_name)))
+    Ok(Json(dto::DownloadJob::from_record(job, album.as_ref())))
 }
 
 pub async fn list(
@@ -110,14 +119,14 @@ pub async fn list(
             tracing::error!("Could not load albums for downloads: {error:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let titles = albums
+    let albums_by_id = albums
         .into_iter()
-        .map(|album| (album.id, album.title))
+        .map(|album| (album.id.clone(), album))
         .collect::<std::collections::HashMap<_, _>>();
 
     let map_job = |job: JobRecord| {
-        let release_name = titles.get(&job.album_id).cloned();
-        dto::DownloadJob::from_record(job, release_name)
+        let album = albums_by_id.get(&job.album_id);
+        dto::DownloadJob::from_record(job, album)
     };
 
     Ok(Json(dto::Downloads {

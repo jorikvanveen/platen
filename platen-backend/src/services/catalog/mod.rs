@@ -4,4 +4,4 @@ mod scan;
 mod utils;
 
 pub(crate) use scan::{ScanCoordinator, ScanPhase, ScanSnapshot, ScanSummary};
-pub(crate) use utils::{PrepareAlbumError, persist_album, prepare_album};
+pub(crate) use utils::{PrepareAlbumError, parse_media_tags, persist_album, prepare_album};
