@@ -38,6 +38,11 @@ match. A release may be an album, EP, or single. The name "Album" is the entity'
 name, not a claim that every one is a full-length album.
 _Avoid_: release, record
 
+**Discovery duplicate group**:
+Albums in an Artist's discovery results with the same release type and title,
+ignoring title case and extra whitespace. Punctuation and edition suffixes remain
+significant, so deluxe editions and differently named editions stay separate.
+
 **Album cover**:
 The optional image Tidal associates with an Album. An Album may remain in the
 catalog without one.
