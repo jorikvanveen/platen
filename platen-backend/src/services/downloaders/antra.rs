@@ -14,7 +14,10 @@ use color_eyre::Report;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{entity::album, services::downloaders::Downloader};
+use crate::{
+    entity::album,
+    services::{downloaders::Downloader, tidal::Tidal},
+};
 
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
 const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -66,6 +69,7 @@ impl DownloadProgress {
 #[derive(Clone)]
 pub struct Antra {
     client: reqwest::Client,
+    tidal: Tidal,
     username: String,
     password: String,
 }
@@ -77,8 +81,9 @@ struct LoginRequestBody {
 }
 
 impl Antra {
-    pub fn new(config: &crate::config::Config) -> Self {
+    pub fn new(config: &crate::config::Config, tidal: Tidal) -> Self {
         Self {
+            tidal,
             client: reqwest::ClientBuilder::new()
                 .cookie_store(true)
                 .build()
@@ -111,39 +116,23 @@ impl Antra {
         Ok(())
     }
 
-    async fn resolve(&self, url: &str) -> Result<ResolveResponse, AntraError> {
-        let resp = self
-            .client
-            .post(format!("{BASE_URL}/resolve"))
-            .json(&ResolveRequestBody {
-                format: "lossless-16".into(),
-                url: url.into(),
-            })
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            tracing::error!("Antra resolve: {}: {}", resp.status(), resp.text().await?);
-            return Err(AntraError::CantResolve);
-        }
-
-        Ok(resp.json().await?)
-    }
-
     async fn create_job(
         &self,
         url: &str,
         track_count: usize,
     ) -> Result<CreateJobResponse, AntraError> {
+        let request = CreateJobRequestBody::for_album(url, track_count)?;
+        tracing::info!(
+            url,
+            track_count,
+            start_index = request.start_index,
+            end_index = request.end_index,
+            "Creating Antra job"
+        );
         let resp = self
             .client
             .post(format!("{BASE_URL}/jobs"))
-            .json(&CreateJobRequestBody {
-                end_index: track_count,
-                format: "lossless-16".into(),
-                start_index: 0,
-                url: url.into(),
-            })
+            .json(&request)
             .send()
             .await?;
 
@@ -156,7 +145,9 @@ impl Antra {
             return Err(AntraError::CantCreateJob);
         };
 
-        Ok(resp.json().await?)
+        let job: CreateJobResponse = resp.json().await?;
+        tracing::info!(job_id = job.job_id, url, "Created Antra job");
+        Ok(job)
     }
 
     async fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, AntraError> {
@@ -389,6 +380,7 @@ struct CreateJobRequestBody {
     format: String,
     start_index: usize,
     url: String,
+    client_packaging: bool
 }
 
 #[derive(Debug, Deserialize)]
@@ -396,17 +388,19 @@ struct CreateJobResponse {
     job_id: String,
 }
 
-#[derive(Debug, Serialize)]
-struct ResolveRequestBody {
-    format: String,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResolveResponse {
-    // The resolve endpoint returns more fields than this; track_count is the
-    // only one needed to create a job.
-    pub track_count: usize,
+impl CreateJobRequestBody {
+    fn for_album(url: &str, track_count: usize) -> Result<Self, AntraError> {
+        if track_count == 0 {
+            return Err(AntraError::EmptyAlbum);
+        }
+        Ok(dbg!(Self {
+            end_index: track_count,
+            format: "lossless-16".into(),
+            start_index: 0,
+            url: url.into(),
+            client_packaging: false
+        }))
+    }
 }
 
 #[derive(Error, Debug)]
@@ -414,8 +408,8 @@ pub enum AntraError {
     #[error("Error sending request: {0}")]
     Reqwest(#[from] reqwest::Error),
 
-    #[error("Could not resolve the album URL")]
-    CantResolve,
+    #[error("The album contains no tracks")]
+    EmptyAlbum,
 
     #[error("Failed to create the Antra job")]
     CantCreateJob,
@@ -462,7 +456,7 @@ impl Downloader for Antra {
         tracing::info!("Downloading album: {}", album.title);
         let url = format!("https://tidal.com/browse/album/{}", album.id);
 
-        let ResolveResponse { track_count } = self.resolve(&url).await?;
+        let track_count = self.tidal.get_album_track_count(&album.id).await?;
         let CreateJobResponse { job_id } = self.create_job(&url, track_count).await?;
 
         let poll_result = timeout(JOB_TIMEOUT, async {

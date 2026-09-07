@@ -8,6 +8,37 @@ use super::{
 };
 
 #[test]
+fn album_track_count_reads_total_items_from_metadata() {
+    let document: super::tidal_response::AlbumTrackCountDocument =
+        serde_json::from_value(serde_json::json!({
+            "data": {
+                "id": "123",
+                "type": "albums",
+                "attributes": {"numberOfItems": 30}
+            }
+        }))
+        .unwrap();
+    assert_eq!(document.data.unwrap().attributes.number_of_items, 30);
+}
+
+#[test]
+fn album_track_count_rejects_missing_or_invalid_counts() {
+    for attributes in [
+        serde_json::json!({}),
+        serde_json::json!({"numberOfItems": null}),
+        serde_json::json!({"numberOfItems": -1}),
+        serde_json::json!({"numberOfItems": "12"}),
+    ] {
+        assert!(
+            serde_json::from_value::<super::tidal_response::AlbumTrackCountDocument>(
+                serde_json::json!({"data": {"attributes": attributes}})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn discovery_contract_preserves_metadata_and_selects_the_highest_known_quality() {
     use crate::routes::tidal::dto;
     use serde_json::{Value, json};

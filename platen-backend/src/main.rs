@@ -43,7 +43,7 @@ async fn main() -> color_eyre::Result<()> {
     );
     tidal.login().await?;
 
-    let antra = Antra::new(&config);
+    let antra = Antra::new(&config, tidal.clone());
     antra.login().await?;
 
     let db: DatabaseConnection = Database::connect(&config.database_url).await?;

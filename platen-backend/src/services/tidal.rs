@@ -225,6 +225,26 @@ impl Tidal {
         Ok(TidalAlbum::from(resource.id, resource.attributes, None))
     }
 
+    pub async fn get_album_track_count(&self, id: &str) -> Result<usize, TidalError> {
+        tracing::info!(album_id = id, "Fetching album track count from Tidal");
+        let url = format!("{TIDAL_BASE_URL}/albums/{id}");
+        let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
+        if !resp.status().is_success() {
+            tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+            return Err(TidalError::UnexpectedResponse);
+        }
+
+        let document: tidal_response::AlbumTrackCountDocument = resp.json().await?;
+        let album = document.data.ok_or(TidalError::UnexpectedResponse)?;
+        let track_count = album.attributes.number_of_items;
+        tracing::info!(
+            album_id = id,
+            track_count,
+            "Fetched album track count from Tidal"
+        );
+        Ok(track_count)
+    }
+
     pub async fn get_album_cover(&self, id: &str) -> Result<Option<String>, TidalError> {
         let url = format!("{TIDAL_BASE_URL}/albums/{id}?include=coverArt");
         let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
@@ -797,6 +817,22 @@ mod tidal_response {
     }
 
     #[derive(Debug, Deserialize)]
+    pub struct AlbumTrackCountDocument {
+        pub data: Option<AlbumTrackCountResource>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    pub struct AlbumTrackCountResource {
+        pub attributes: AlbumTrackCountAttributes,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct AlbumTrackCountAttributes {
+        pub number_of_items: usize,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
     pub struct AlbumSingleResource {
         pub data: Option<AlbumResource>,
         #[serde(default)]
