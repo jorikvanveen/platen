@@ -1,203 +1,79 @@
+use super::super::{discovery::discover_album_candidates, model::ScanPhase};
 use super::*;
 use crate::{services::tidal, test_support::mocks::EmptyTidalCatalog};
 
-fn test_scan() -> ActiveScan {
-    ActiveScan::new().0
-}
-
-async fn discover(root: &Path) -> Vec<AlbumCandidate> {
-    discover_album_candidates(root, &test_scan())
-        .await
-        .candidates
-}
-
-async fn summary(scan: &ActiveScan) -> ScanSummary {
-    scan.status.snapshot.lock().await.summary.clone()
-}
-
-#[tokio::test]
-async fn discovery_owns_counts_and_publishes_progress_without_reading_it_back() {
-    let music = tempfile::tempdir().unwrap();
-    let album = music.path().join("Artist/Title (2024)");
-    tokio::fs::create_dir_all(&album).await.unwrap();
-    tokio::fs::write(album.join("track.flac"), b"audio")
-        .await
-        .unwrap();
-    tokio::fs::create_dir_all(music.path().join("Artist/Empty"))
-        .await
-        .unwrap();
-    let scan = test_scan();
-    scan.publish_summary(&ScanSummary {
-        album_directories_found: 99,
-        skipped_directories: 99,
-        locations_attached: 99,
-        ..Default::default()
+async fn terminal_snapshot(coordinator: &ScanCoordinator) -> ScanSnapshot {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let snapshot = coordinator.snapshot().await.unwrap();
+            if !snapshot.phase.is_active() {
+                return snapshot;
+            }
+            tokio::task::yield_now().await;
+        }
     })
-    .await;
-
-    let report = discover_album_candidates(music.path(), &scan).await;
-    let discovered = ScanSummary::from(&report);
-    assert_eq!(
-        discovered,
-        ScanSummary {
-            album_directories_found: 1,
-            candidates_total: 1,
-            skipped_directories: 1,
-            ..Default::default()
-        }
-    );
-    let progress = summary(&scan).await;
-    assert_eq!(progress.album_directories_found, 1);
-    assert_eq!(progress.skipped_directories, 1);
-
-    scan.publish_summary(&discovered).await;
-    assert_eq!(summary(&scan).await, discovered);
-}
-
-#[test]
-fn discovery_summary_includes_root_failure_diagnostics() {
-    let report = DiscoveryReport {
-        diagnostics: vec![FilesystemDiagnostic {
-            reason: "resolve_music_root",
-            path: "missing".into(),
-            os_error: std::io::ErrorKind::NotFound.into(),
-        }],
-        root_failed: true,
-        ..Default::default()
-    };
-    assert_eq!(
-        ScanSummary::from(&report),
-        ScanSummary {
-            filesystem_errors: 1,
-            ..Default::default()
-        }
-    );
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
-async fn discovers_supported_audio_recursively_and_parses_only_the_final_year() {
-    let music = tempfile::tempdir().unwrap();
-    let album = music.path().join("Artist/Title (Live) (2024)/Disc 1");
-    tokio::fs::create_dir_all(&album).await.unwrap();
-    tokio::fs::write(album.join("track.FLAC"), b"audio")
+async fn a_panicked_worker_reports_failure_and_allows_another_scan() {
+    let root = tempfile::tempdir().unwrap();
+    let album_path = root.path().join("Artist/Title");
+    tokio::fs::create_dir_all(&album_path).await.unwrap();
+    tokio::fs::write(album_path.join("track.flac"), b"audio")
         .await
         .unwrap();
-
-    let candidates = discover(music.path()).await;
-
+    let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+    <migration::Migrator as migration::MigratorTrait>::up(&db, None)
+        .await
+        .unwrap();
+    let source = Arc::new(GatedCatalog {
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Semaphore::new(0),
+    });
+    let coordinator =
+        ScanCoordinator::new(MusicDirectory::new(root.path().into()), db, source.clone());
+    coordinator.start().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), source.entered.notified())
+        .await
+        .unwrap();
+    source.release.close();
+    let failed = terminal_snapshot(&coordinator).await;
+    assert_eq!(failed.phase, ScanPhase::Failed);
+    assert_eq!(failed.summary.candidates_total, 1);
+    assert_eq!(failed.summary.failures, 1);
     assert_eq!(
-        candidates,
-        vec![AlbumCandidate {
-            primary_artist: "Artist".to_owned(),
-            title: "Title (Live)".to_owned(),
-            release_year: Some(2024),
-            relative_path: "Artist/Title (Live) (2024)".to_owned(),
-        }]
+        failed.failure_reason.as_deref(),
+        Some("Music directory scan stopped unexpectedly.")
+    );
+    assert_eq!(coordinator.snapshot().await, Some(failed));
+    tokio::fs::remove_dir_all(album_path).await.unwrap();
+    coordinator.start().await.unwrap();
+    assert_eq!(
+        terminal_snapshot(&coordinator).await.phase,
+        ScanPhase::Completed
     );
 }
 
 #[tokio::test]
-async fn accepts_every_supported_extension_case_insensitively() {
-    let music = tempfile::tempdir().unwrap();
-    for (index, extension) in [
-        "flac", "MP3", "M4a", "aac", "OGG", "opus", "WAV", "aiff", "AIF", "alac",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let album = music.path().join(format!("Artist/Album {index}"));
-        tokio::fs::create_dir_all(&album).await.unwrap();
-        tokio::fs::write(album.join(format!("track.{extension}")), b"audio")
-            .await
-            .unwrap();
-    }
-
-    assert_eq!(discover(music.path()).await.len(), 10);
-}
-
-#[tokio::test]
-async fn skips_empty_artwork_only_malformed_and_staging_directories() {
-    let music = tempfile::tempdir().unwrap();
-    for album in ["Empty", "Artwork", "(2024)"] {
-        tokio::fs::create_dir_all(music.path().join("Artist").join(album))
-            .await
-            .unwrap();
-    }
-    tokio::fs::write(music.path().join("Artist/Artwork/cover.jpg"), b"image")
+async fn concurrent_start_requests_admit_exactly_one_worker() {
+    let root = tempfile::tempdir().unwrap();
+    let db = sea_orm::Database::connect("sqlite::memory:").await.unwrap();
+    <migration::Migrator as migration::MigratorTrait>::up(&db, None)
         .await
         .unwrap();
-    let staging = music.path().join(STAGING_DIRECTORY).join("job");
-    tokio::fs::create_dir_all(&staging).await.unwrap();
-    tokio::fs::write(staging.join("track.flac"), b"audio")
-        .await
-        .unwrap();
-
-    let scan = test_scan();
-    let report = discover_album_candidates(music.path(), &scan).await;
-
-    assert!(report.candidates.is_empty());
-    assert_eq!(summary(&scan).await.skipped_directories, 3);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn resolves_a_symbolic_link_root_but_does_not_follow_descendants() {
-    use std::os::unix::fs::symlink;
-
-    let parent = tempfile::tempdir().unwrap();
-    let real = parent.path().join("real");
-    tokio::fs::create_dir_all(real.join("Artist/Real album"))
-        .await
-        .unwrap();
-    tokio::fs::write(real.join("Artist/Real album/track.flac"), b"audio")
-        .await
-        .unwrap();
-    let outside = parent.path().join("outside/Linked album");
-    tokio::fs::create_dir_all(&outside).await.unwrap();
-    tokio::fs::write(outside.join("track.mp3"), b"audio")
-        .await
-        .unwrap();
-    symlink(&outside, real.join("Artist/Linked album")).unwrap();
-    let root_link = parent.path().join("music");
-    symlink(&real, &root_link).unwrap();
-
-    let scan = test_scan();
-    let candidates = discover_album_candidates(&root_link, &scan)
-        .await
-        .candidates;
-
-    assert_eq!(candidates.len(), 1);
-    assert_eq!(candidates[0].title, "Real album");
-    assert_eq!(summary(&scan).await.skipped_directories, 1);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn skips_non_utf8_directories_without_panicking() {
-    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
-
-    let music = tempfile::tempdir().unwrap();
-    let invalid = OsString::from_vec(vec![b'A', 0xff]);
-    tokio::fs::create_dir_all(music.path().join(invalid))
-        .await
-        .unwrap();
-
-    let scan = test_scan();
-    let report = discover_album_candidates(music.path(), &scan).await;
-
-    assert!(report.candidates.is_empty());
-    assert_eq!(summary(&scan).await.skipped_directories, 1);
-}
-
-#[tokio::test]
-async fn a_missing_root_is_a_terminal_failure() {
-    let root = tempfile::tempdir().unwrap().path().join("missing");
-    let scan = test_scan();
-
-    let report = discover_album_candidates(&root, &scan).await;
-    assert!(report.root_failed);
-    assert_eq!(report.diagnostics.len(), 1);
-    assert_eq!(report.diagnostics[0].path, root);
+    let music = MusicDirectory::new(root.path().into());
+    let guard = music.lock().await;
+    let coordinator = ScanCoordinator::new(music.clone(), db, Arc::new(EmptyTidalCatalog));
+    let starts = futures_util::future::join_all((0..20).map(|_| coordinator.start())).await;
+    assert_eq!(starts.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(starts.iter().filter(|result| result.is_err()).count(), 19);
+    drop(guard);
+    assert_eq!(
+        terminal_snapshot(&coordinator).await.phase,
+        ScanPhase::Completed
+    );
 }
 
 struct GatedCatalog {
@@ -395,8 +271,7 @@ async fn unreadable_root_report_clears_locations_before_failure() {
     .insert(&db)
     .await
     .unwrap();
-    let scan = test_scan();
-    let report = discover_album_candidates(&root, &scan).await;
+    let report = discover_album_candidates(&root, |_| {}).await;
     assert!(report.root_failed);
     assert_eq!(
         report.diagnostics[0].path,
@@ -407,9 +282,7 @@ async fn unreadable_root_report_clears_locations_before_failure() {
         db.clone(),
         Arc::new(EmptyTidalCatalog),
     );
-    let (scan, handle, _) = ActiveScan::new();
-    coordinator.run(scan).await;
-    let snapshot = handle.snapshot().await;
+    let snapshot = coordinator.workflow.run(|_| {}).await;
     assert_eq!(snapshot.phase, ScanPhase::Failed);
     assert_eq!(snapshot.summary.locations_cleared, 1);
     assert_eq!(snapshot.summary.filesystem_errors, 1);

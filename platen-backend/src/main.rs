@@ -9,7 +9,7 @@ use crate::{
     app::{AppState, router},
     config::Config,
     services::{
-        catalog::ScanCoordinator, download_queue::DownloadQueue, downloaders::antra::Antra,
+        download_queue::DownloadQueue, downloaders::antra::Antra, import::ScanCoordinator,
         music_directory::MusicDirectory, tidal::Tidal,
     },
 };

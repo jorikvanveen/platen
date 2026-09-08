@@ -5,9 +5,10 @@ import {
 	CatalogScanRequestError,
 	getCatalogScan,
 	isCatalogScanActive,
-	pollCatalogScan,
+
 	startCatalogScan,
 } from "./catalogScan";
+import { pollCatalogScan } from "./importController";
 
 const emptySummary = {
 	album_directories_found: 0,
@@ -50,7 +51,7 @@ describe("catalog scan requests", () => {
 		const fetcher = vi.fn().mockResolvedValue(response(null));
 
 		await expect(getCatalogScan(fetcher)).resolves.toBeNull();
-		expect(fetcher).toHaveBeenCalledWith("/api/catalog/scan");
+		expect(fetcher).toHaveBeenCalledWith("/api/catalog/scan", { signal: undefined });
 	});
 
 	it("starts a scan with POST and decodes its status", async () => {
@@ -58,7 +59,7 @@ describe("catalog scan requests", () => {
 		const fetcher = vi.fn().mockResolvedValue(response(active, 202));
 
 		await expect(startCatalogScan(fetcher)).resolves.toEqual(active);
-		expect(fetcher).toHaveBeenCalledWith("/api/catalog/scan", { method: "POST" });
+		expect(fetcher).toHaveBeenCalledWith("/api/catalog/scan", { method: "POST", signal: undefined });
 	});
 
 	it("returns the active status with a conflict error", async () => {
@@ -71,7 +72,7 @@ describe("catalog scan requests", () => {
 	});
 
 	it("polls until a completed status and then stops", async () => {
-		const updates: CatalogScan[] = [];
+		const updates: Array<CatalogScan | null> = [];
 		const fetcher = vi
 			.fn()
 			.mockResolvedValueOnce(response(scan("matching")))
@@ -83,7 +84,7 @@ describe("catalog scan requests", () => {
 		});
 
 		expect(result?.phase).toBe("completed");
-		expect(updates.map(({ phase }) => phase)).toEqual(["scanning", "matching", "completed"]);
+		expect(updates.map((status) => status?.phase)).toEqual(["scanning", "matching", "completed"]);
 		expect(fetcher).toHaveBeenCalledTimes(2);
 	});
 

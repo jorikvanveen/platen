@@ -1,20 +1,15 @@
 <script lang="ts">
 	import { onMount } from "svelte";
 	import PageHeading from "$lib/components/PageHeading.svelte";
-	import {
-		CatalogScanConflictError,
-		isCatalogScanActive,
-		pollCatalogScan,
-		startCatalogScan,
-	} from "$lib/catalogScan";
+	import { isCatalogScanActive } from "$lib/catalogScan";
+	import { createImportController } from "$lib/importController";
 	import type { CatalogScan } from "$lib/dto/CatalogScan";
 	import type { PageProps } from "./$types";
 
 	let { data }: PageProps = $props();
-	// svelte-ignore state_referenced_locally -- data.scan only seeds local state; polling owns later updates.
-	let scan = $state<CatalogScan | null>(data.scan);
-	let requestError = $state<string | null>(null);
-	let polling = false;
+	// svelte-ignore state_referenced_locally -- The controller owns updates after the initial route load.
+	const controller = createImportController(fetch, data.scan);
+	const scan = $derived($controller.scan);
 
 	const active = $derived(isCatalogScanActive(scan));
 	const phaseLabel = $derived(getPhaseLabel(scan?.phase));
@@ -34,35 +29,9 @@
 		}
 	}
 
-	async function follow(current: CatalogScan) {
-		if (polling) return;
-		polling = true;
-		try {
-			await pollCatalogScan(fetch, (status) => (scan = status), { initial: current });
-		} catch (error) {
-			requestError = error instanceof Error ? error.message : "Could not load scan progress.";
-		} finally {
-			polling = false;
-		}
-	}
-
-	async function start() {
-		requestError = null;
-		try {
-			scan = await startCatalogScan(fetch);
-		} catch (error) {
-			if (error instanceof CatalogScanConflictError) {
-				scan = error.activeScan;
-			} else {
-				requestError = error instanceof Error ? error.message : "Could not start the scan.";
-				return;
-			}
-		}
-		if (scan) void follow(scan);
-	}
-
 	onMount(() => {
-		if (scan && isCatalogScanActive(scan)) void follow(scan);
+		void controller.resume();
+		return () => controller.dispose();
 	});
 
 	const counts = $derived(
@@ -98,12 +67,19 @@
 	</div>
 	<div class="controls">
 		{#if active}<span class="activity">Working</span>{/if}
-		<button onclick={start} disabled={active}>{active ? "Scan running" : "Start scan"}</button>
+		<button onclick={controller.start} disabled={active || $controller.starting}>
+			{active ? "Scan running" : $controller.starting ? "Starting scan" : "Start scan"}
+		</button>
 	</div>
 </section>
 
-{#if requestError}
-	<p class="message error">{requestError}</p>
+{#if $controller.error}
+	<p class="message error" role="alert">
+		{$controller.error}
+		{#if active && !$controller.following}
+			<button onclick={controller.resume}>Retry progress</button>
+		{/if}
+	</p>
 {/if}
 
 {#if scan?.failure_reason}

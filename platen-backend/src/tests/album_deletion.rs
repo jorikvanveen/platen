@@ -535,7 +535,7 @@ async fn scan_can_reimport_album_deleted_during_matching() {
         .unwrap();
     assert_eq!(
         fixture.state.scan.snapshot().await.unwrap().phase,
-        crate::services::catalog::ScanPhase::Matching
+        crate::services::import::ScanPhase::Matching
     );
     insert_test_album(&fixture.db, "selected").await;
     assert_eq!(fixture.delete("{}").await.0, StatusCode::OK);

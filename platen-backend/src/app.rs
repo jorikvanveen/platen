@@ -6,7 +6,7 @@ use sea_orm::DatabaseConnection;
 
 use crate::{
     routes,
-    services::{catalog::ScanCoordinator, download_queue::DownloadQueue, tidal::Tidal},
+    services::{download_queue::DownloadQueue, import::ScanCoordinator, tidal::Tidal},
 };
 
 #[derive(Clone)]
@@ -39,7 +39,7 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route(
             "/catalog/scan",
-            get(routes::catalog::scan_status).post(routes::catalog::start_scan),
+            get(routes::import::scan_status).post(routes::import::start_scan),
         )
         .route(
             "/artists/{artist_id}/albums",

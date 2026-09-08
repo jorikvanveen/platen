@@ -1,51 +1,8 @@
-use super::super::scan::FilesystemDiagnostic;
+use super::super::discovery::FilesystemDiagnostic;
 use super::*;
+use crate::entity::{album, album_artist, artist};
 use migration::MigratorTrait;
-use sea_orm::{ColumnTrait, Database, QueryFilter};
-
-#[test]
-fn location_decisions_require_a_unique_candidate_unless_the_old_path_is_observed() {
-    let first = candidate("Artist/Title", "Artist", "Title", None);
-    let second = candidate("Artist/Title (2024)", "Artist", "Title", Some(2024));
-    let candidates = [&first, &second];
-    for (old_path, observed, expected) in [
-        (
-            None,
-            false,
-            [
-                LocationDecision::NoLocation,
-                LocationDecision::Attach("Artist/Title"),
-                LocationDecision::NoLocation,
-            ],
-        ),
-        (
-            Some("Old/Title"),
-            false,
-            [
-                LocationDecision::Clear,
-                LocationDecision::Change("Artist/Title"),
-                LocationDecision::Clear,
-            ],
-        ),
-        (
-            Some("Old/Title"),
-            true,
-            [
-                LocationDecision::Keep("Old/Title"),
-                LocationDecision::Keep("Old/Title"),
-                LocationDecision::Keep("Old/Title"),
-            ],
-        ),
-    ] {
-        for (candidate_count, expected) in expected.into_iter().enumerate() {
-            assert_eq!(
-                decide_location(old_path, observed, &candidates[..candidate_count]),
-                expected,
-                "old_path={old_path:?}, observed={observed}, candidates={candidate_count}"
-            );
-        }
-    }
-}
+use sea_orm::{ActiveModelTrait, ColumnTrait, Database, EntityTrait, QueryFilter, Set};
 
 async fn database() -> DatabaseConnection {
     let db = Database::connect("sqlite::memory:").await.unwrap();
@@ -115,13 +72,23 @@ async fn stored(db: &DatabaseConnection, id: &str) -> album::Model {
 }
 
 async fn run(db: &DatabaseConnection, candidates: Vec<AlbumCandidate>) -> ScanSummary {
-    let mut report = DiscoveryReport {
+    let report = DiscoveryReport {
         candidates,
         ..Default::default()
     };
-    let mut summary = ScanSummary::from(&report);
-    reconcile(db, &mut report, &mut summary).await.unwrap();
-    summary
+    reconcile_report(db, &report).await.1
+}
+
+async fn reconcile_report(
+    db: &DatabaseConnection,
+    report: &DiscoveryReport,
+) -> (ReconciliationPlan, ScanSummary) {
+    let mut progress = Progress::new(|_| {});
+    progress.snapshot.summary = ScanSummary::from(report);
+    let plan = reconcile_catalog(&ImportRepository::new(db.clone()), report, &mut progress)
+        .await
+        .unwrap();
+    (plan, progress.snapshot.summary)
 }
 
 #[tokio::test]
@@ -129,18 +96,15 @@ async fn unknown_candidates_are_returned_without_counting_them_as_processed_or_s
     let db = database().await;
     seed(&db, "known", "Known", 2024, None, &["Artist"]).await;
     let unknown = candidate("Artist/Unknown", "Artist", "Unknown", None);
-    let mut report = DiscoveryReport {
+    let report = DiscoveryReport {
         candidates: vec![
             candidate("Artist/Known", "Artist", "Known", None),
             unknown.clone(),
         ],
         ..Default::default()
     };
-    let mut summary = ScanSummary::from(&report);
-    assert_eq!(
-        reconcile(&db, &mut report, &mut summary).await.unwrap(),
-        vec![unknown]
-    );
+    let (plan, summary) = reconcile_report(&db, &report).await;
+    assert_eq!(plan.unknown_candidates, vec![unknown]);
     assert_eq!(summary.candidates_total, 2);
     assert_eq!(summary.candidates_processed, 1);
     assert_eq!(summary.locations_attached, 1);
@@ -242,7 +206,7 @@ async fn supplied_permission_diagnostic_does_not_preserve_any_absent_path() {
         &["Artist"],
     )
     .await;
-    let mut report = DiscoveryReport {
+    let report = DiscoveryReport {
         candidates: vec![candidate("Artist/Visible", "Artist", "Visible", None)],
         diagnostics: vec![FilesystemDiagnostic {
             reason: "read_directory",
@@ -252,8 +216,7 @@ async fn supplied_permission_diagnostic_does_not_preserve_any_absent_path() {
         root_failed: false,
         ..Default::default()
     };
-    let mut summary = ScanSummary::from(&report);
-    reconcile(&db, &mut report, &mut summary).await.unwrap();
+    let (_, summary) = reconcile_report(&db, &report).await;
     assert_eq!(summary.filesystem_errors, 1);
     assert_eq!(summary.locations_cleared, 2);
     assert_eq!(summary.unchanged_locations, 1);

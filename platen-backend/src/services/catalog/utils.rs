@@ -1,13 +1,14 @@
+use super::release_date::{ReleaseDate, parse_release_date};
+
 use std::collections::HashSet;
 
 use sea_orm::{
-    ActiveValue, ConnectionTrait, DatabaseConnection, DbErr, EntityTrait, TransactionError,
-    TransactionTrait, TryInsertResult,
+    ActiveValue, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait,
+    TransactionError, TransactionTrait, TryInsertResult,
 };
 
 use crate::{
     entity::{album, album_artist, artist},
-    routes::album::{ReleaseDate, parse_release_date},
     services::tidal::{
         ResolvedTidalSearchedAlbum, TidalAlbum, TidalArtist, TidalCatalog, TidalError,
     },
@@ -116,46 +117,55 @@ pub(crate) async fn persist_album(
     relative_path: Option<String>,
 ) -> Result<PersistAlbumOutcome, TransactionError<DbErr>> {
     db.transaction::<_, PersistAlbumOutcome, DbErr>(|transaction| {
-        Box::pin(async move {
-            let PreparedAlbum {
-                album,
-                artists,
-                release_date,
-            } = prepared;
-            let album_id = album.id.clone();
-            let inserted = album::Entity::insert(album::ActiveModel {
-                id: ActiveValue::Set(album.id),
-                title: ActiveValue::Set(album.title),
-                cover_url: ActiveValue::Set(album.cover_url),
-                album_type: ActiveValue::Set(Some(album.r#type)),
-                release_year: ActiveValue::Set(release_date.year),
-                release_month: ActiveValue::Set(release_date.month),
-                release_day: ActiveValue::Set(release_date.day),
-                relative_path: ActiveValue::Set(relative_path),
-                explicit: ActiveValue::Set(album.explicit),
-                media_tags: ActiveValue::Set(album.media_tags.map(serde_json::Value::from)),
-            })
-            .on_conflict_do_nothing()
-            .exec(transaction)
-            .await?;
-            let imported = matches!(inserted, TryInsertResult::Inserted(_));
-            // A concurrent creator may win the insert. Its metadata and credits must stay intact.
-            if imported {
-                for artist in &artists {
-                    upsert_artist(transaction, artist).await?;
-                }
-                insert_credits(transaction, &album_id, &artists).await?;
-            }
-            let model = album::Entity::find_by_id(&album_id)
-                .one(transaction)
-                .await?
-                .ok_or_else(|| {
-                    DbErr::RecordNotFound(format!("Album {album_id} was not found after insertion"))
-                })?;
-            Ok(PersistAlbumOutcome { model, imported })
-        })
+        Box::pin(
+            async move { persist_album_in_transaction(transaction, prepared, relative_path).await },
+        )
     })
     .await
+}
+
+// The caller owns the transaction so location checks and catalog insertion commit together.
+pub(crate) async fn persist_album_in_transaction(
+    transaction: &DatabaseTransaction,
+    prepared: PreparedAlbum,
+    relative_path: Option<String>,
+) -> Result<PersistAlbumOutcome, DbErr> {
+    let PreparedAlbum {
+        album,
+        artists,
+        release_date,
+    } = prepared;
+    let album_id = album.id.clone();
+    let inserted = album::Entity::insert(album::ActiveModel {
+        id: ActiveValue::Set(album.id),
+        title: ActiveValue::Set(album.title),
+        cover_url: ActiveValue::Set(album.cover_url),
+        album_type: ActiveValue::Set(Some(album.r#type)),
+        release_year: ActiveValue::Set(release_date.year),
+        release_month: ActiveValue::Set(release_date.month),
+        release_day: ActiveValue::Set(release_date.day),
+        relative_path: ActiveValue::Set(relative_path),
+        explicit: ActiveValue::Set(album.explicit),
+        media_tags: ActiveValue::Set(album.media_tags.map(serde_json::Value::from)),
+    })
+    .on_conflict_do_nothing()
+    .exec(transaction)
+    .await?;
+    let imported = matches!(inserted, TryInsertResult::Inserted(_));
+    // A concurrent creator may win the insert. Its metadata and credits must stay intact.
+    if imported {
+        for artist in &artists {
+            upsert_artist(transaction, artist).await?;
+        }
+        insert_credits(transaction, &album_id, &artists).await?;
+    }
+    let model = album::Entity::find_by_id(&album_id)
+        .one(transaction)
+        .await?
+        .ok_or_else(|| {
+            DbErr::RecordNotFound(format!("Album {album_id} was not found after insertion"))
+        })?;
+    Ok(PersistAlbumOutcome { model, imported })
 }
 
 pub async fn upsert_artist(

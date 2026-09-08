@@ -5,6 +5,9 @@ use std::{
 
 use tokio::sync::{Mutex, MutexGuard};
 
+// Downloads stage here so unfinished audio never becomes a catalog location.
+pub(crate) const STAGING_DIRECTORY: &str = ".platen-staging";
+
 #[derive(Clone)]
 pub(crate) struct MusicDirectory {
     path: PathBuf,

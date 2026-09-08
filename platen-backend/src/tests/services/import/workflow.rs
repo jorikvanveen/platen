@@ -1,12 +1,15 @@
 use super::*;
+use crate::entity::album;
 use crate::{
     entity::{album_artist, artist},
     services::{
-        catalog::{reconciliation::reconcile, utils::prepare_album},
+        catalog::{persist_album, prepare_album},
         tidal::{ResolvedTidalSearchedAlbum, TidalAlbum, TidalArtist, TidalError},
     },
 };
-use sea_orm::{ActiveModelTrait, ConnectionTrait, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set,
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -191,14 +194,15 @@ async fn run(
     source: &dyn TidalCatalog,
     candidates: Vec<AlbumCandidate>,
 ) -> ScanSummary {
-    let mut report = report(candidates);
-    let mut summary = ScanSummary::from(&report);
-    let unknowns = reconcile(db, &mut report, &mut summary).await.unwrap();
-    let (scan, handle, _) = ActiveScan::new();
-    scan.publish_summary(&summary).await;
-    match_and_import(db, source, &report, unknowns, &mut summary, &scan).await;
-    assert_eq!(handle.snapshot().await.summary, summary);
-    summary
+    let report = report(candidates);
+    let repository = ImportRepository::new(db.clone());
+    let mut progress = Progress::new(|_| {});
+    progress.snapshot.summary = ScanSummary::from(&report);
+    let plan = reconcile_catalog(&repository, &report, &mut progress)
+        .await
+        .unwrap();
+    match_and_import(&repository, source, &report, plan, &mut progress).await;
+    progress.snapshot.summary
 }
 
 #[tokio::test]
@@ -217,12 +221,8 @@ async fn conservative_identity_year_and_ordered_primary_artist() {
             records: vec![record("one", "A:B (Live)", "2024-02-29")],
             ..Default::default()
         };
-        let result = match_candidate(
-            &source,
-            &report(vec![]),
-            &candidate("Artist/Album", artist, title, year),
-        )
-        .await;
+        let result =
+            match_candidate(&source, &candidate("Artist/Album", artist, title, year)).await;
         assert_eq!(
             matches!(result, MatchOutcome::Unique(_)),
             expected,
@@ -248,12 +248,8 @@ async fn dates_must_parse_and_match_in_search_metadata_only() {
             records: vec![album],
             ..Default::default()
         };
-        let outcome = match_candidate(
-            &source,
-            &report(vec![]),
-            &candidate("Artist/Title", "AC/DC", "Title", year),
-        )
-        .await;
+        let outcome =
+            match_candidate(&source, &candidate("Artist/Title", "AC/DC", "Title", year)).await;
         assert_eq!(
             outcome_name(&outcome),
             expected,
@@ -301,12 +297,8 @@ async fn uniqueness_requires_valid_search_metadata_and_distinct_ids() {
             records,
             ..Default::default()
         };
-        let outcome = match_candidate(
-            &source,
-            &report(vec![]),
-            &candidate("Artist/Title", "AC/DC", "Title", year),
-        )
-        .await;
+        let outcome =
+            match_candidate(&source, &candidate("Artist/Title", "AC/DC", "Title", year)).await;
         assert_eq!(outcome_name(&outcome), expected);
         if let MatchOutcome::Ambiguous(ids) = outcome {
             assert_eq!(ids, vec!["one", "two"]);
@@ -393,7 +385,7 @@ async fn imports_preserve_search_data_without_any_detail_requests() {
             ..Default::default()
         };
         let candidate = candidate("Artist/Search title", "AC/DC", "Search title", Some(2024));
-        let outcome = match_candidate(&source, &report(vec![]), &candidate).await;
+        let outcome = match_candidate(&source, &candidate).await;
         source.assert_no_detail_calls();
         let MatchOutcome::Unique(prepared) = outcome else {
             panic!("Expected unique search match with {failure:?}, got {outcome:?}");
@@ -734,19 +726,11 @@ async fn failed_import_rolls_back_independently_and_occupied_paths_are_skipped()
     );
     assert_eq!(artist::Entity::find().all(&db).await.unwrap().len(), 2);
     let prepared = prepare_album(&source, "bad").await.unwrap();
-    let mut summary = ScanSummary::default();
-    import_match(
-        &db,
-        &report(vec![]),
-        &candidate("Artist/Good", "AC/DC", "Bad", None),
-        prepared,
-        &mut summary,
-    )
-    .await
-    .unwrap();
-    assert_eq!(summary.duplicate_locations, 1);
-    assert_eq!(summary.skipped_directories, 1);
-    assert_eq!(summary.failures, 0);
+    let outcome = ImportRepository::new(db.clone())
+        .import(prepared, "Artist/Good".into())
+        .await
+        .unwrap();
+    assert_eq!(outcome, ImportOutcome::Duplicate { stored_path: None });
     assert!(
         album::Entity::find_by_id("bad")
             .one(&db)
@@ -780,37 +764,35 @@ async fn matching_is_bounded_publishes_each_completion_and_defers_all_imports() 
         candidate("Artist/Two", "AC/DC", "Two", None),
         candidate("Artist/Three", "AC/DC", "Three", None),
     ]);
-    let (scan, handle, _) = ActiveScan::new();
+    let (publisher, handle) = tokio::sync::watch::channel(ScanSnapshot::default());
     let task = tokio::spawn({
         let db = db.clone();
         let source = source.clone();
         async move {
-            let mut summary = ScanSummary::from(&report);
-            scan.publish_summary(&summary).await;
-            match_and_import(
-                &db,
-                source.as_ref(),
-                &report,
-                report.candidates.clone(),
-                &mut summary,
-                &scan,
-            )
-            .await;
-            summary
+            let repository = ImportRepository::new(db);
+            let mut progress = Progress::new(move |snapshot| {
+                publisher.send_replace(snapshot);
+            });
+            progress.snapshot.summary = ScanSummary::from(&report);
+            let plan = reconcile_catalog(&repository, &report, &mut progress)
+                .await
+                .unwrap();
+            match_and_import(&repository, source.as_ref(), &report, plan, &mut progress).await;
+            progress.snapshot.summary
         }
     });
     tokio::time::timeout(Duration::from_secs(2), async {
         while source.active.load(Ordering::SeqCst) != 2 {
             tokio::task::yield_now().await;
         }
-        assert_eq!(handle.snapshot().await.summary.candidates_processed, 0);
+        assert_eq!(handle.borrow().clone().summary.candidates_processed, 0);
         first.add_permits(1);
-        while handle.snapshot().await.summary.candidates_processed != 1 {
+        while handle.borrow().clone().summary.candidates_processed != 1 {
             tokio::task::yield_now().await;
         }
         assert!(album::Entity::find().all(&db).await.unwrap().is_empty());
         third.add_permits(1);
-        while handle.snapshot().await.summary.candidates_processed != 2 {
+        while handle.borrow().clone().summary.candidates_processed != 2 {
             tokio::task::yield_now().await;
         }
         assert!(album::Entity::find().all(&db).await.unwrap().is_empty());
@@ -825,5 +807,5 @@ async fn matching_is_bounded_publishes_each_completion_and_defers_all_imports() 
     assert_eq!(summary.candidates_processed, 3);
     assert_eq!(summary.albums_imported, 3);
     assert_eq!(source.peak.load(Ordering::SeqCst), 2);
-    assert_eq!(handle.snapshot().await.summary, summary);
+    assert_eq!(handle.borrow().clone().summary, summary);
 }

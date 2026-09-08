@@ -22,8 +22,8 @@ export function isCatalogScanActive(scan: CatalogScan | null): boolean {
 	return scan?.phase === "scanning" || scan?.phase === "matching";
 }
 
-export async function getCatalogScan(fetcher: Fetcher): Promise<CatalogScan | null> {
-	const response = await fetcher(`${API_URL}/catalog/scan`);
+export async function getCatalogScan(fetcher: Fetcher, signal?: AbortSignal): Promise<CatalogScan | null> {
+	const response = await fetcher(`${API_URL}/catalog/scan`, { signal });
 	if (!response.ok) {
 		throw new CatalogScanRequestError("Could not load the Music directory scan.", response.status);
 	}
@@ -31,8 +31,8 @@ export async function getCatalogScan(fetcher: Fetcher): Promise<CatalogScan | nu
 	return body === null ? null : decodeCatalogScan(body);
 }
 
-export async function startCatalogScan(fetcher: Fetcher): Promise<CatalogScan> {
-	const response = await fetcher(`${API_URL}/catalog/scan`, { method: "POST" });
+export async function startCatalogScan(fetcher: Fetcher, signal?: AbortSignal): Promise<CatalogScan> {
+	const response = await fetcher(`${API_URL}/catalog/scan`, { method: "POST", signal });
 	if (response.status === 409) {
 		throw new CatalogScanConflictError(decodeCatalogScan(await response.json()));
 	}
@@ -40,27 +40,6 @@ export async function startCatalogScan(fetcher: Fetcher): Promise<CatalogScan> {
 		throw new CatalogScanRequestError("Could not start the Music directory scan.", response.status);
 	}
 	return decodeCatalogScan(await response.json());
-}
-
-export async function pollCatalogScan(
-	fetcher: Fetcher,
-	onUpdate: (scan: CatalogScan) => void,
-	options: {
-		initial?: CatalogScan;
-		intervalMs?: number;
-		sleep?: (milliseconds: number) => Promise<void>;
-	} = {},
-): Promise<CatalogScan | null> {
-	const sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
-	let scan = options.initial ?? (await getCatalogScan(fetcher));
-	if (scan) onUpdate(scan);
-
-	while (isCatalogScanActive(scan)) {
-		await sleep(options.intervalMs ?? 1000);
-		scan = await getCatalogScan(fetcher);
-		if (scan) onUpdate(scan);
-	}
-	return scan;
 }
 
 function decodeCatalogScan(value: unknown): CatalogScan {

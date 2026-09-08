@@ -20,8 +20,8 @@ use super::*;
 use crate::{
     entity::{album, album_artist, artist},
     services::{
-        catalog::ScanCoordinator,
         downloaders::Downloader,
+        import::ScanCoordinator,
         music_directory::MusicDirectory,
         tidal::{ResolvedTidalSearchedAlbum, TidalAlbum, TidalArtist, TidalCatalog, TidalError},
     },

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::routes::album::STAGING_DIRECTORY;
+use super::music_directory::STAGING_DIRECTORY;
 
 pub(crate) async fn remove_album_directory(
     root: &Path,
