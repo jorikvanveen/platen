@@ -21,6 +21,7 @@ use crate::{
 
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
 const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const MAX_CONSECUTIVE_STATUS_FAILURES: u32 = 3;
 const DOWNLOAD_PROGRESS_PERCENT_INTERVAL: u64 = 5;
 
 struct DownloadProgress {
@@ -158,12 +159,10 @@ impl Antra {
             .await?;
 
         if !resp.status().is_success() {
-            tracing::error!(
-                "Antra job status: {}: {}",
-                resp.status(),
-                resp.text().await?
-            );
-            return Err(AntraError::CantGetStatus);
+            return Err(AntraError::CantGetStatus {
+                status: resp.status(),
+                body: resp.text().await?,
+            });
         }
 
         Ok(resp.json().await?)
@@ -380,7 +379,7 @@ struct CreateJobRequestBody {
     format: String,
     start_index: usize,
     url: String,
-    client_packaging: bool
+    client_packaging: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,8 +413,11 @@ pub enum AntraError {
     #[error("Failed to create the Antra job")]
     CantCreateJob,
 
-    #[error("Failed to receive job status")]
-    CantGetStatus,
+    #[error("Failed to receive job status: {status}: {body}")]
+    CantGetStatus {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 
     #[error("I/O Error: {0}")]
     IoError(#[from] io::Error),
@@ -460,9 +462,30 @@ impl Downloader for Antra {
         let CreateJobResponse { job_id } = self.create_job(&url, track_count).await?;
 
         let poll_result = timeout(JOB_TIMEOUT, async {
+            let mut consecutive_status_failures = 0;
             loop {
                 sleep(Duration::from_secs(5)).await;
-                let JobStatusResponse { status: job_status } = self.job_status(&job_id).await?;
+                let JobStatusResponse { status: job_status } = match self.job_status(&job_id).await
+                {
+                    Ok(status) => {
+                        consecutive_status_failures = 0;
+                        status
+                    }
+                    Err(error) => {
+                        consecutive_status_failures += 1;
+                        tracing::warn!(
+                            job_id,
+                            consecutive_status_failures,
+                            max_consecutive_status_failures = MAX_CONSECUTIVE_STATUS_FAILURES,
+                            error = %error,
+                            "Antra status check failed"
+                        );
+                        if consecutive_status_failures >= MAX_CONSECUTIVE_STATUS_FAILURES {
+                            return Err(error);
+                        }
+                        continue;
+                    }
+                };
                 tracing::info!("Job status: {job_status}");
                 if job_status == "complete" {
                     return Ok(());

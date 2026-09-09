@@ -74,6 +74,11 @@ A download service. Given a Tidal album URL, fetches lossless audio and hands
 it to platen as a file. Download depends on the Album's Tidal ID being valid
 in Tidal. See Music directory for what platen does with the file.
 
+**Antra job**:
+A unit of work owned by Antra that fetches audio for a Download job. Platen
+observes its status, but an Antra job is distinct from Platen's Download job.
+_Avoid_: Download job
+
 **Music directory**:
 The configured directory where platen stores and discovers audio. Its layout is
 one directory per Primary artist, containing one directory per Album named for
