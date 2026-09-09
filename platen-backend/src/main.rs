@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{Database, DatabaseConnection};
@@ -10,7 +10,7 @@ use crate::{
     config::Config,
     services::{
         download_queue::DownloadQueue, downloaders::antra::Antra, import::ScanCoordinator,
-        music_directory::MusicDirectory, tidal::Tidal,
+        music_directory::MusicDirectory, rate_limit::RateLimit, tidal::Tidal,
     },
 };
 
@@ -36,10 +36,12 @@ async fn main() -> color_eyre::Result<()> {
     let config = Config::load()?;
     tracing::info!("Loaded configuration");
 
+    let tidal_rate_limit = RateLimit::new(Duration::from_secs(1));
     let tidal = Tidal::new(
         config.tidal_client_id.clone(),
         config.tidal_client_secret.clone(),
         config.tidal_country_code.clone(),
+        tidal_rate_limit,
     );
     tidal.login().await?;
 

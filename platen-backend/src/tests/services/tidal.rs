@@ -1,3 +1,7 @@
+use std::time::Duration;
+
+use crate::services::rate_limit::RateLimit;
+
 use super::tidal_response::{
     AlbumSearch, AlbumSearchIncluded, AlbumSearchIncludedAttributes, AlbumWithArtistsDocument,
     ArtistAlbumsRelationshipDocument, ArtistSingleResource, ArtworkRelationship,
@@ -197,7 +201,12 @@ fn unknown_media_tags_are_logged_even_after_the_highest_quality_is_found() {
 #[test]
 fn catalog_requests_include_the_configured_country() {
     for country_code in ["NL", "US"] {
-        let tidal = super::Tidal::new(String::new(), String::new(), country_code.to_owned());
+        let tidal = super::Tidal::new(
+            String::new(),
+            String::new(),
+            country_code.to_owned(),
+            RateLimit::new(Duration::ZERO),
+        );
         for path in [
             "/searchResults",
             "/artists/123?include=profileArt",
@@ -233,7 +242,12 @@ fn catalog_requests_include_the_configured_country() {
 
 #[test]
 fn pagination_preserves_the_cursor_and_enforces_one_configured_country() {
-    let tidal = super::Tidal::new(String::new(), String::new(), "NL".to_owned());
+    let tidal = super::Tidal::new(
+        String::new(),
+        String::new(),
+        "NL".to_owned(),
+        RateLimit::new(Duration::ZERO),
+    );
     for country_query in ["", "&countryCode=NL", "&countryCode=US&countryCode=GB"] {
         let url = format!(
             "{}/artists/123/relationships/albums?page%5Bcursor%5D=a%2Bb%2F%3D&include=albums,albums.coverArt{country_query}",
@@ -262,7 +276,12 @@ fn pagination_preserves_the_cursor_and_enforces_one_configured_country() {
 
 #[test]
 fn search_parameters_are_preserved_alongside_the_country() {
-    let tidal = super::Tidal::new(String::new(), String::new(), "NL".to_owned());
+    let tidal = super::Tidal::new(
+        String::new(),
+        String::new(),
+        "NL".to_owned(),
+        RateLimit::new(Duration::ZERO),
+    );
     let request = tidal
         .catalog_request(&format!("{}/searchResults", super::TIDAL_BASE_URL))
         .unwrap()

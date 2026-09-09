@@ -5,4 +5,5 @@ pub mod downloaders;
 pub(crate) mod filesystem;
 pub(crate) mod import;
 pub(crate) mod music_directory;
+pub(crate) mod rate_limit;
 pub mod tidal;

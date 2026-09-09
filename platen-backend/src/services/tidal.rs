@@ -11,6 +11,8 @@ use tidal_response::{
     ArtistSearchDocument,
 };
 
+use crate::services::rate_limit::RateLimit;
+
 static TIDAL_BASE_URL: &str = "https://openapi.tidal.com/v2";
 
 #[derive(Error, Debug)]
@@ -61,13 +63,19 @@ struct TidalAuth {
 pub struct Tidal {
     client: reqwest::Client,
     auth: Arc<Mutex<TidalAuth>>,
+    rate_limit: RateLimit,
     client_id: String,
     client_secret: String,
     country_code: String,
 }
 
 impl Tidal {
-    pub fn new(client_id: String, client_secret: String, country_code: String) -> Self {
+    pub fn new(
+        client_id: String,
+        client_secret: String,
+        country_code: String,
+        rate_limit: RateLimit,
+    ) -> Self {
         Self {
             client: reqwest::ClientBuilder::new().build().expect(
                 "reqwest client build only fails on TLS misconfiguration, which is static here",
@@ -76,6 +84,7 @@ impl Tidal {
                 token: None,
                 expires_at: Default::default(),
             })),
+            rate_limit,
             client_id,
             client_secret,
             country_code,
@@ -118,6 +127,7 @@ impl Tidal {
                 .ok_or(TidalError::UnexpectedResponse)?
                 .bearer_auth(token);
 
+            self.rate_limit.wait().await;
             match req.send().await {
                 Ok(res)
                     if res.status() == StatusCode::TOO_MANY_REQUESTS && retries < MAX_RETRIES =>
@@ -147,6 +157,7 @@ impl Tidal {
     }
 
     async fn get_oauth_token(&self) -> Result<String, TidalError> {
+        self.rate_limit.wait().await;
         let response = self
             .client
             .post("https://auth.tidal.com/v1/oauth2/token")
