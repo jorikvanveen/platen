@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { ArrowDownAZ, UsersRound } from '@lucide/svelte';
+	import { resolve } from '$app/paths';
 	import ArtistCard from '$lib/components/ArtistCard.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import type { PageProps } from './$types';
 
@@ -42,6 +44,7 @@
 					</div>
 					<h2>No artists in the catalog yet.</h2>
 					<p>Artists will appear here when albums are added to your catalog.</p>
+					<Button href={resolve('/search')} class="mt-6">Search albums</Button>
 				</div>
 			</Card.Content>
 		</Card.Root>

@@ -1,6 +1,8 @@
 <script lang="ts">
 	import '../app.css';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
+	import { Button } from '$lib/components/ui/button/index.js';
 
 	let { children } = $props();
 </script>
@@ -16,7 +18,22 @@
 		<a class="brand" href={resolve('/')} aria-label="Platen home">
 			Platen
 		</a>
-		<span class="catalog-label">Music catalog</span>
+		<nav aria-label="Main">
+			<Button
+				href={resolve('/')}
+				variant={page.route.id === '/' ? 'secondary' : 'ghost'}
+				aria-current={page.route.id === '/' ? 'page' : undefined}
+			>
+				Artists
+			</Button>
+			<Button
+				href={resolve('/search')}
+				variant={page.route.id === '/search' ? 'secondary' : 'ghost'}
+				aria-current={page.route.id === '/search' ? 'page' : undefined}
+			>
+				Search albums
+			</Button>
+		</nav>
 	</div>
 </header>
 
@@ -53,9 +70,10 @@
 		text-decoration: none;
 	}
 
-	.catalog-label {
-		color: var(--muted-foreground);
-		font-size: 0.8125rem;
+	nav {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
 	}
 
 	main {

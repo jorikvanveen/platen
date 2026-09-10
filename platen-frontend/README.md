@@ -6,6 +6,11 @@ The homepage displays all catalog Artists alphabetically, ignoring case and
 accents. It uses shadcn-svelte cards, profile images with initial fallbacks, and a
 responsive grid. Artist cards are display-only until artist pages are rebuilt.
 
+Search albums at `/search`. Searches run on submission, with the query kept in
+the URL. Results preserve Tidal's ordering and exclude albums already in the
+catalog. Adding a result saves the album and its credited artists without
+starting a download.
+
 ## Development
 
 Run from this directory:
@@ -53,8 +58,8 @@ sh platen-backend/scripts/generate-ui.sh
 ```
 
 This replaces `components.json`, `src/app.css`, `src/lib/utils.ts`, and the Card,
-Avatar, and Badge components in `src/lib/components/ui`. Do not edit those
-generated files directly. Put app-specific components outside `ui`.
+Avatar, Badge, Button, Input, and Label components in `src/lib/components/ui`.
+Do not edit those generated files directly. Put app-specific components outside `ui`.
 
 The script renames shadcn's `cn` class helper to `mergeClasses`, including its
 imports and calls in the generated components.
