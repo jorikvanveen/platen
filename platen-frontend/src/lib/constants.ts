@@ -1,4 +1,3 @@
-import { env } from "$env/dynamic/public"
+import { env } from '$env/dynamic/public';
 
-console.log(env.PUBLIC_PLATEN_BACKEND_URL)
-export const API_URL = env.PUBLIC_PLATEN_BACKEND_URL ?? "/api"
+export const API_URL = env.PUBLIC_PLATEN_BACKEND_URL ?? '/api';
