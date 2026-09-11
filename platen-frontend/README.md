@@ -4,7 +4,12 @@ SvelteKit 2, Svelte 5, and TypeScript, built with the Node adapter.
 
 The homepage displays all catalog Artists alphabetically, ignoring case and
 accents. It uses shadcn-svelte cards, profile images with initial fallbacks, and a
-responsive grid. Artist cards are display-only until artist pages are rebuilt.
+responsive grid.
+
+Artist cards link to `/artist/[artist_id]`. Each artist page displays all catalog
+albums credited to that artist, including shared credits, sorted alphabetically
+by title while ignoring case and accents. Album cards show covers, credited
+artists, release years, and album types.
 
 Search albums at `/search`. Searches run on submission, with the query kept in
 the URL. Results preserve Tidal's ordering and exclude albums already in the

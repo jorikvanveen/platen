@@ -21,7 +21,9 @@
 		<nav aria-label="Main">
 			<Button
 				href={resolve('/')}
-				variant={page.route.id === '/' ? 'secondary' : 'ghost'}
+				variant={page.route.id === '/' || page.route.id?.startsWith('/artist/')
+					? 'secondary'
+					: 'ghost'}
 				aria-current={page.route.id === '/' ? 'page' : undefined}
 			>
 				Artists
