@@ -122,7 +122,6 @@
 	<section class="locations" aria-labelledby="locations-heading">
 		<div class="section-heading">
 			<h3 id="locations-heading">Catalog locations</h3>
-			<p>Across the scan</p>
 		</div>
 		<div>
 			<dl class="location-stats">
@@ -162,9 +161,6 @@
 					</div>
 				{/each}
 			</dl>
-			<p class="note">
-				Counts can overlap. Skipped directories include unmatched albums and duplicate locations.
-			</p>
 		</details>
 	{/if}
 </div>

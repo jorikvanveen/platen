@@ -148,12 +148,8 @@
 						<p>{previewError}</p>
 					{:else if !preview}
 						<p>Checking album location...</p>
-					{:else}
-						<p>
-							{deleteFiles
-								? 'This directory and everything in it will be permanently deleted.'
-								: 'Files will stay on disk unless you select this option.'}
-						</p>
+					{:else if deleteFiles}
+						<p>This directory and everything in it will be permanently deleted.</p>
 						<code>{preview.absolute_path}</code>
 					{/if}
 				</div>
@@ -184,10 +180,13 @@
 	}
 
 	.file-description {
-		margin-top: 0.75rem;
 		color: var(--muted-foreground);
 		font-size: 0.8125rem;
 		line-height: 1.5;
+	}
+
+	.file-description p {
+		margin-top: 0.75rem;
 	}
 
 	.file-description code {

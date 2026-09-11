@@ -141,7 +141,7 @@
 		<div>
 			<h1 id="scan-heading">Scan music</h1>
 			<p class="description">
-				Import albums from your Music directory and update catalog locations. Files stay untouched.
+				Import albums from your Music directory
 			</p>
 		</div>
 		<div class="page-actions">

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ArrowDownAZ, ArrowLeft, Disc3, Plus } from '@lucide/svelte';
+	import { ArrowLeft, Disc3, Plus } from '@lucide/svelte';
 	import { tick } from 'svelte';
 	import { goto, invalidate, invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
@@ -138,12 +138,6 @@
 				<Plus aria-hidden="true" />
 				Add release
 			</Button>
-			{#if albums.length > 0}
-				<p class="sort-order">
-					<ArrowDownAZ size={16} aria-hidden="true" />
-					<span>Title, A–Z</span>
-				</p>
-			{/if}
 		</div>
 	</div>
 
@@ -208,20 +202,7 @@
 	}
 
 	.page-actions {
-		display: flex;
 		flex-shrink: 0;
-		flex-direction: column;
-		align-items: flex-end;
-		gap: 0.875rem;
-	}
-
-	.sort-order {
-		display: flex;
-		flex-shrink: 0;
-		align-items: center;
-		gap: 0.5rem;
-		color: var(--muted-foreground);
-		font-size: 0.8125rem;
 	}
 
 	.album-grid {
@@ -274,9 +255,6 @@
 
 		.page-actions {
 			width: 100%;
-			flex-direction: row;
-			align-items: center;
-			justify-content: space-between;
 		}
 
 		.album-grid {

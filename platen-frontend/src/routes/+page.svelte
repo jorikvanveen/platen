@@ -1,8 +1,7 @@
 <script lang="ts">
-	import { ArrowDownAZ, UsersRound } from '@lucide/svelte';
+	import { UsersRound } from '@lucide/svelte';
 	import { resolve } from '$app/paths';
 	import ArtistCard from '$lib/components/ArtistCard.svelte';
-	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import type { PageProps } from './$types';
@@ -17,22 +16,8 @@
 
 <section aria-labelledby="artists-heading">
 	<div class="page-header">
-		<div>
-			<div class="title-row">
-				<h1 id="artists-heading">Artists</h1>
-				<Badge variant="secondary">
-					{data.artists.length} {data.artists.length === 1 ? 'artist' : 'artists'}
-				</Badge>
-			</div>
-			<p class="page-description">All the artists in your catalog.</p>
-		</div>
-
-		{#if data.artists.length > 0}
-			<p class="sort-order">
-				<ArrowDownAZ size={16} aria-hidden="true" />
-				<span>Name, A–Z</span>
-			</p>
-		{/if}
+		<h1 id="artists-heading">Artists</h1>
+		<p class="page-description">All the artists in your catalog.</p>
 	</div>
 
 	{#if data.artists.length === 0}
@@ -59,18 +44,7 @@
 
 <style>
 	.page-header {
-		display: flex;
-		align-items: flex-end;
-		justify-content: space-between;
-		gap: 1rem;
 		margin-bottom: 2rem;
-	}
-
-	.title-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.875rem;
 	}
 
 	h1 {
@@ -85,16 +59,6 @@
 		color: var(--muted-foreground);
 		font-size: 0.9375rem;
 		line-height: 1.6;
-	}
-
-	.sort-order {
-		display: flex;
-		flex-shrink: 0;
-		align-items: center;
-		gap: 0.5rem;
-		padding-bottom: 0.25rem;
-		color: var(--muted-foreground);
-		font-size: 0.8125rem;
 	}
 
 	.artist-grid {
@@ -146,8 +110,6 @@
 
 	@media (max-width: 40rem) {
 		.page-header {
-			align-items: flex-start;
-			flex-direction: column;
 			margin-bottom: 1.5rem;
 		}
 
