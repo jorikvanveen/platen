@@ -9,7 +9,18 @@ responsive grid.
 Artist cards link to `/artist/[artist_id]`. Each artist page displays all catalog
 albums credited to that artist, including shared credits, sorted alphabetically
 by title while ignoring case and accents. Album cards show covers, credited
-artists, release years, and album types.
+artists, release years, and album types. Each card can queue a download or delete
+the album. Download is disabled when an album location is known; queued and running
+downloads show their current status. The delete dialog keeps files by default and
+only shows the disk-deletion option and directory for downloaded albums. Deleting
+an artist's last album returns to Artists when the backend removes that artist.
+
+Each artist links to `/artist/[artist_id]/add` to discover releases. This page
+preserves the backend's Tidal ordering, catalog exclusions, and duplicate
+selection. Adding a release saves it and all credited artists, then automatically
+queues its download. If queuing fails, the card offers a download-only retry
+without removing the album from the catalog. The artist page shows download
+progress when you return to it.
 
 Search albums at `/search`. Searches run on submission, with the query kept in
 the URL. Results preserve Tidal's ordering and exclude albums already in the
@@ -63,7 +74,8 @@ sh platen-backend/scripts/generate-ui.sh
 ```
 
 This replaces `components.json`, `src/app.css`, `src/lib/utils.ts`, and the Card,
-Avatar, Badge, Button, Input, and Label components in `src/lib/components/ui`.
+Avatar, Badge, Button, Input, Label, Alert Dialog, and Checkbox components in
+`src/lib/components/ui`.
 Do not edit those generated files directly. Put app-specific components outside `ui`.
 
 The script renames shadcn's `cn` class helper to `mergeClasses`, including its

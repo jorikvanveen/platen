@@ -11,7 +11,9 @@
 		releaseYear,
 		children
 	}: {
-		album: Pick<Album, 'title' | 'cover_url' | 'album_type' | 'artists' | 'explicit'>;
+		album: Pick<Album, 'title' | 'cover_url' | 'album_type' | 'explicit'> & {
+			artists?: Album['artists'];
+		};
 		releaseYear: number | string | undefined;
 		children?: Snippet;
 	} = $props();
@@ -27,7 +29,7 @@
 			? (albumTypeLabels[album.album_type.toLowerCase()] ?? album.album_type)
 			: null
 	);
-	const artistNames = $derived(album.artists.map((artist) => artist.name).join(', '));
+	const artistNames = $derived(album.artists?.map((artist) => artist.name).join(', '));
 </script>
 
 <Card.Root class="h-full gap-0 py-0 shadow-none">
@@ -55,7 +57,9 @@
 		<div class="album-content">
 			<div class="album-details">
 				<h2>{album.title}</h2>
-				<p class="artist-names">{artistNames || 'Unknown artist'}</p>
+				{#if album.artists}
+					<p class="artist-names">{artistNames || 'Unknown artist'}</p>
+				{/if}
 				<div class="album-metadata">
 					{#if releaseYear !== undefined}<span>{releaseYear}</span>{/if}
 					{#if albumType}<span>{albumType}</span>{/if}

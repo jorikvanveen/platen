@@ -16,7 +16,7 @@ npx --yes shadcn-svelte@1.6.1 init \
 	--ui-alias '$lib/components/ui' \
 	--reinstall
 
-npx --yes shadcn-svelte@1.6.1 add card avatar badge button input label --yes --overwrite --skip-preflight
+npx --yes shadcn-svelte@1.6.1 add card avatar badge button input label alert-dialog checkbox --yes --overwrite --skip-preflight
 
 # Rename upstream's shorthand here so regeneration preserves our descriptive helper name.
 node --input-type=module <<'NODE'
