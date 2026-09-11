@@ -2,10 +2,14 @@
   inputs = {
     utils.url = "github:numtide/flake-utils";
   };
-  outputs = { self, nixpkgs, utils }: utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, utils }: utils.lib.eachSystem [
+    "aarch64-darwin"
+    "aarch64-linux"
+    "x86_64-linux"
+  ] (system:
     let
       pkgs = nixpkgs.legacyPackages.${system};
-      version = "0.1.2";
+      version = "1.0.0";
     in
     {
       devShell = pkgs.mkShell {
