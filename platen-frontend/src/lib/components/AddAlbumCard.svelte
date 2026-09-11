@@ -50,7 +50,7 @@
 		}
 		submitting = false;
 
-		// Keep catalog pages current without reloading discovery and hiding download retries.
+		// Reloading results would hide albums that still need a download retry.
 		await Promise.all([
 			invalidate(`${API_URL}/artists`),
 			...(catalogAlbum?.artists ?? []).map((artist) =>

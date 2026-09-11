@@ -35,6 +35,13 @@
 			>
 				Search albums
 			</Button>
+			<Button
+				href={resolve('/downloads')}
+				variant={page.route.id === '/downloads' ? 'secondary' : 'ghost'}
+				aria-current={page.route.id === '/downloads' ? 'page' : undefined}
+			>
+				Downloads
+			</Button>
 		</nav>
 	</div>
 </header>
@@ -58,6 +65,7 @@
 	.header-content {
 		display: flex;
 		min-height: 5rem;
+		flex-wrap: wrap;
 		align-items: center;
 		justify-content: space-between;
 		gap: 1.5rem;
@@ -74,6 +82,7 @@
 
 	nav {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: 0.25rem;
 	}
@@ -112,6 +121,8 @@
 
 		.header-content {
 			min-height: 4.5rem;
+			gap: 0.75rem;
+			padding-block: 0.875rem;
 		}
 
 		main {

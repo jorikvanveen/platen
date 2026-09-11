@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { navigating } from '$app/state';
-	import AlbumSearchCard from '$lib/components/AlbumSearchCard.svelte';
+	import AddAlbumCard from '$lib/components/AddAlbumCard.svelte';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
@@ -85,7 +85,7 @@
 		{#if data.results && data.results.albums.length > 0}
 			<ul class="album-grid" aria-label="Album search results" role="list">
 				{#each data.results.albums as album (album.id)}
-					<li><AlbumSearchCard {album} /></li>
+					<li><AddAlbumCard {album} /></li>
 				{/each}
 			</ul>
 		{:else}

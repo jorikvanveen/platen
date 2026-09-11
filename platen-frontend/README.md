@@ -24,8 +24,15 @@ progress when you return to it.
 
 Search albums at `/search`. Searches run on submission, with the query kept in
 the URL. Results preserve Tidal's ordering and exclude albums already in the
-catalog. Adding a result saves the album and its credited artists without
-starting a download.
+catalog. Search and artist discovery share the same Add & download action,
+including download-only retries when an album was added but its download could
+not be queued.
+
+Downloads at `/downloads` shows active jobs and recent history with album titles,
+credited artists, statuses, and failure reasons. Queued jobs can be cancelled;
+running jobs cannot. The page refreshes every two seconds while open, even when
+empty, and keeps the last successful snapshot visible if a refresh fails. History
+describes download attempts, not whether an album is currently on disk.
 
 ## Development
 

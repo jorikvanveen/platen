@@ -118,6 +118,59 @@ async fn test_database() -> DatabaseConnection {
 }
 
 #[tokio::test]
+async fn credited_artists_groups_requested_albums_in_credit_order() {
+    let db = test_database().await;
+    for album_id in ["album-1", "album-2", "unrequested"] {
+        let mut source = FakeCatalog::default();
+        source.album.id = album_id.to_owned();
+        if album_id == "album-2" {
+            source.artists.reverse();
+        }
+        let prepared = prepare_album(&source, album_id).await.unwrap();
+        persist_album(&db, prepared, None).await.unwrap();
+    }
+
+    let album_ids = ["album-2", "album-1", "album-2", "missing"].map(str::to_owned);
+    let artists_by_album_id = credited_artists(&db, &album_ids).await.unwrap();
+    assert_eq!(artists_by_album_id.len(), 2);
+    for (album_id, artist_ids) in [
+        ("album-1", ["artist-2", "artist-1"]),
+        ("album-2", ["artist-1", "artist-2"]),
+    ] {
+        assert_eq!(
+            artists_by_album_id[album_id]
+                .iter()
+                .map(|artist| artist.id.as_str())
+                .collect::<Vec<_>>(),
+            artist_ids
+        );
+        assert_eq!(
+            credited_artists_for_album(&db, album_id).await.unwrap(),
+            artists_by_album_id[album_id]
+        );
+    }
+
+    let single_album = credited_artists(&db, &["album-1".to_owned()])
+        .await
+        .unwrap();
+    assert_eq!(single_album.len(), 1);
+    assert_eq!(single_album["album-1"], artists_by_album_id["album-1"]);
+    assert!(credited_artists(&db, &[]).await.unwrap().is_empty());
+    assert!(
+        credited_artists(&db, &["missing".to_owned()])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        credited_artists_for_album(&db, "missing")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn preparation_tolerates_missing_cover_and_preserves_credit_order() {
     let source = FakeCatalog::default();
     let prepared = prepare_album(&source, "album-1").await.unwrap();

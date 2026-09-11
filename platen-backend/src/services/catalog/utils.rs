@@ -1,10 +1,10 @@
 use super::release_date::{ReleaseDate, parse_release_date};
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use sea_orm::{
-    ActiveValue, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr, EntityTrait,
-    TransactionError, TransactionTrait, TryInsertResult,
+    ActiveValue, ColumnTrait, ConnectionTrait, DatabaseConnection, DatabaseTransaction, DbErr,
+    EntityTrait, QueryFilter, QueryOrder, TransactionError, TransactionTrait, TryInsertResult,
 };
 
 use crate::{
@@ -13,6 +13,44 @@ use crate::{
         ResolvedTidalSearchedAlbum, TidalAlbum, TidalArtist, TidalCatalog, TidalError,
     },
 };
+
+pub(crate) async fn credited_artists_for_album(
+    db: &impl ConnectionTrait,
+    album_id: &str,
+) -> Result<Vec<artist::Model>, DbErr> {
+    Ok(credited_artists(db, &[album_id.to_owned()])
+        .await?
+        .remove(album_id)
+        .unwrap_or_default())
+}
+
+pub(crate) async fn credited_artists(
+    db: &impl ConnectionTrait,
+    album_ids: &[String],
+) -> Result<HashMap<String, Vec<artist::Model>>, DbErr> {
+    if album_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    // A plain join only selects the from-entity's columns, so the artist
+    // columns must come through find_also_related, not into_model.
+    let rows = album_artist::Entity::find()
+        .filter(album_artist::Column::AlbumId.is_in(album_ids.iter().cloned()))
+        .find_also_related(artist::Entity)
+        .order_by_asc(album_artist::Column::Position)
+        .all(db)
+        .await?;
+    let mut artists_by_album_id = HashMap::<_, Vec<artist::Model>>::new();
+    for (credit, artist) in rows {
+        if let Some(artist) = artist {
+            artists_by_album_id
+                .entry(credit.album_id)
+                .or_default()
+                .push(artist);
+        }
+    }
+    Ok(artists_by_album_id)
+}
 
 pub(crate) fn parse_media_tags(album: &album::Model) -> Option<Vec<String>> {
     let tags = album.media_tags.as_ref()?;

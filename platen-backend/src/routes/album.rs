@@ -1,7 +1,6 @@
 use std::path::{self, PathBuf};
 
 use chrono::Datelike;
-use futures_util::{StreamExt, TryStreamExt, stream};
 use tokio::fs;
 
 use axum::{
@@ -10,8 +9,7 @@ use axum::{
 };
 use reqwest::StatusCode;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set,
-    TransactionTrait,
+    ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set, TransactionTrait,
 };
 use tracing::{error, info};
 
@@ -75,7 +73,7 @@ pub mod dto {
     }
 }
 
-fn album_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
+fn album_dto(model: album::Model, artists: Vec<artist::Model>) -> dto::Album {
     let media_tags = catalog::parse_media_tags(&model);
     dto::Album {
         available_quality: services::tidal::available_quality(media_tags.as_deref())
@@ -83,7 +81,7 @@ fn album_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
         explicit: model.explicit,
         media_tags,
         id: model.id,
-        artists,
+        artists: artists.into_iter().map(Into::into).collect(),
         title: model.title,
         cover_url: model.cover_url,
         album_type: model.album_type,
@@ -92,25 +90,6 @@ fn album_dto(model: album::Model, artists: Vec<Artist>) -> dto::Album {
         release_day: model.release_day,
         relative_path: model.relative_path,
     }
-}
-
-async fn credited_artists(
-    db: &impl ConnectionTrait,
-    album_id: &str,
-) -> Result<Vec<Artist>, sea_orm::DbErr> {
-    // A plain join only selects the from-entity's columns, so the artist
-    // columns must come through find_also_related, not into_model.
-    let rows = album_artist::Entity::find()
-        .filter(album_artist::Column::AlbumId.eq(album_id))
-        .find_also_related(artist::Entity)
-        .order_by_asc(album_artist::Column::Position)
-        .all(db)
-        .await?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(_, artist)| artist)
-        .map(Into::into)
-        .collect())
 }
 
 #[axum::debug_handler]
@@ -135,10 +114,12 @@ pub(crate) async fn create_with(
             StatusCode::INTERNAL_SERVER_ERROR
         })?
     {
-        let artists = credited_artists(db, &existing.id).await.map_err(|e| {
-            error!("Db error: {e:#?}");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        let artists = catalog::credited_artists_for_album(db, &existing.id)
+            .await
+            .map_err(|e| {
+                error!("Db error: {e:#?}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
         return Ok(Json(album_dto(existing, artists)));
     }
 
@@ -162,10 +143,12 @@ pub(crate) async fn create_with(
         })?
         .model;
 
-    let artists = credited_artists(db, &model.id).await.map_err(|e| {
-        error!("Db error loading album credits: {e:#?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let artists = catalog::credited_artists_for_album(db, &model.id)
+        .await
+        .map_err(|e| {
+            error!("Db error loading album credits: {e:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(Json(album_dto(model, artists)))
 }
 
@@ -274,22 +257,22 @@ pub async fn fetch_all_artist_albums(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let result = stream::iter(rows.into_iter().filter_map(|(_, album_model)| {
-        album_model.map(|album_model| {
-            let db = &db;
-            async move {
-                let artists = credited_artists(db, &album_model.id).await?;
-                Ok::<_, sea_orm::DbErr>(album_dto(album_model, artists))
-            }
+    let albums: Vec<_> = rows.into_iter().filter_map(|(_, album)| album).collect();
+    let album_ids: Vec<_> = albums.iter().map(|album| album.id.clone()).collect();
+    let mut artists_by_album_id =
+        catalog::credited_artists(&db, &album_ids)
+            .await
+            .map_err(|e| {
+                error!("Db error: {e:#?}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    let result = albums
+        .into_iter()
+        .map(|album| {
+            let artists = artists_by_album_id.remove(&album.id).unwrap_or_default();
+            album_dto(album, artists)
         })
-    }))
-    .buffered(20)
-    .try_collect::<Vec<_>>()
-    .await
-    .map_err(|e| {
-        error!("Db error: {e:#?}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+        .collect();
 
     Ok(Json(result))
 }
@@ -311,6 +294,12 @@ pub async fn download(
         return Err(StatusCode::CONFLICT);
     }
 
+    let artists = catalog::credited_artists_for_album(&db, &album_id)
+        .await
+        .map_err(|error| {
+            error!("Could not load artists before enqueueing download: {error:#?}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     let job = queue.enqueue(album_id).await.map_err(|error| match error {
         services::download_queue::QueueError::Full => StatusCode::TOO_MANY_REQUESTS,
         services::download_queue::QueueError::WorkerStopped => {
@@ -321,7 +310,7 @@ pub async fn download(
 
     Ok((
         StatusCode::ACCEPTED,
-        Json(DownloadJob::from_record(job, Some(&album))),
+        Json(DownloadJob::from_record(job, Some(&album), artists)),
     ))
 }
 

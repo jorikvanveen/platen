@@ -1380,6 +1380,27 @@ async fn download_responses_resolve_current_catalog_metadata() {
         let db = test_database().await;
         for album_id in ["album-1", "album-2"] {
             insert_test_album(&db, album_id).await;
+            // Reverse insertion order and IDs keep this test sensitive to credit position.
+            for (artist_id, name, position) in [("a", "Third artist", 2), ("z", "Second artist", 1)]
+            {
+                let artist_id = format!("{artist_id}-{album_id}");
+                artist::ActiveModel {
+                    id: Set(artist_id.clone()),
+                    name: Set(name.to_owned()),
+                    profile_image_url: Set(Some(format!("https://example.com/{artist_id}.jpg"))),
+                }
+                .insert(&db)
+                .await
+                .unwrap();
+                album_artist::ActiveModel {
+                    album_id: Set(album_id.to_owned()),
+                    artist_id: Set(artist_id),
+                    position: Set(position),
+                }
+                .insert(&db)
+                .await
+                .unwrap();
+            }
             album::ActiveModel {
                 id: Set(album_id.to_owned()),
                 explicit: Set(explicit),
@@ -1398,6 +1419,15 @@ async fn download_responses_resolve_current_catalog_metadata() {
         );
         let app = router(app_state(db.clone(), queue));
         let assert_metadata = |job: &serde_json::Value| {
+            let album_id = job["album_id"].as_str().unwrap();
+            assert_eq!(
+                job["artists"],
+                json!([
+                    {"id": format!("artist-{album_id}"), "name": "Test artist", "profile_image_url": null},
+                    {"id": format!("z-{album_id}"), "name": "Second artist", "profile_image_url": format!("https://example.com/z-{album_id}.jpg")},
+                    {"id": format!("a-{album_id}"), "name": "Third artist", "profile_image_url": format!("https://example.com/a-{album_id}.jpg")}
+                ])
+            );
             assert_eq!(job.get("explicit"), Some(&json!(explicit)));
             assert_eq!(job.get("available_quality"), Some(&json!(quality)));
             assert_eq!(
@@ -1449,6 +1479,14 @@ async fn download_responses_resolve_current_catalog_metadata() {
         .update(&db)
         .await
         .unwrap();
+        artist::ActiveModel {
+            id: Set("z-album-2".to_owned()),
+            name: Set("Renamed second artist".to_owned()),
+            ..Default::default()
+        }
+        .update(&db)
+        .await
+        .unwrap();
         let body = downloads(&app).await;
         let updated = body["history"]
             .as_array()
@@ -1459,6 +1497,8 @@ async fn download_responses_resolve_current_catalog_metadata() {
         assert_eq!(updated["release_name"], "Updated catalog title");
         assert_eq!(updated["explicit"], true);
         assert_eq!(updated["available_quality"], "HIRES_LOSSLESS + DOLBY_ATMOS");
+        assert_eq!(updated["artists"][1]["id"], "z-album-2");
+        assert_eq!(updated["artists"][1]["name"], "Renamed second artist");
 
         let response = app
             .clone()
@@ -1482,6 +1522,7 @@ async fn download_responses_resolve_current_catalog_metadata() {
             .unwrap();
         assert_eq!(retained["id"], queued["id"]);
         assert_eq!(retained["status"], "cancelled");
+        assert_eq!(retained["artists"], json!([]));
         for field in ["release_name", "explicit", "available_quality"] {
             assert_eq!(retained.get(field), Some(&json!(null)));
         }

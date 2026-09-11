@@ -2,8 +2,8 @@
 	import { ArrowLeft, CircleAlert, Disc3, LoaderCircle } from '@lucide/svelte';
 	import { invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import AddAlbumCard from '$lib/components/AddAlbumCard.svelte';
 	import ArtistProfileImage from '$lib/components/ArtistProfileImage.svelte';
-	import ArtistReleaseCard from '$lib/components/ArtistReleaseCard.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
@@ -64,7 +64,7 @@
 	{#if data.results && data.results.albums.length > 0}
 		<ul class="album-grid" aria-label="Releases to add" role="list">
 			{#each data.results.albums as album (album.id)}
-				<li><ArtistReleaseCard {album} /></li>
+				<li><AddAlbumCard {album} /></li>
 			{/each}
 		</ul>
 	{:else}

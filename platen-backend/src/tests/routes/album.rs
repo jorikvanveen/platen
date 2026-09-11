@@ -4,10 +4,10 @@ use migration::MigratorTrait;
 use sea_orm::{ActiveModelTrait, Database, EntityTrait, Set};
 use thiserror::Error;
 
-use super::{DownloadError, credited_artists, download_with};
+use super::{DownloadError, download_with};
 use crate::{
     entity::{album, album_artist, artist},
-    services::downloaders::Downloader,
+    services::{catalog, downloaders::Downloader},
 };
 
 #[derive(Debug, Error)]
@@ -117,7 +117,9 @@ async fn album_dto_orders_credits_primary_first() {
         .unwrap();
     }
 
-    let artists = credited_artists(&db, &album.id).await.unwrap();
+    let artists = catalog::credited_artists_for_album(&db, &album.id)
+        .await
+        .unwrap();
     let dto = super::album_dto(album, artists);
 
     assert_eq!(

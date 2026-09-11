@@ -1,6 +1,6 @@
 use crate::{
     app::AppState,
-    entity::album,
+    entity::{album, artist},
     services::{
         catalog,
         download_queue::{CancelError, JobRecord, JobStatus},
@@ -36,6 +36,7 @@ pub mod dto {
         pub id: String,
         pub album_id: String,
         pub release_name: Option<String>,
+        pub artists: Vec<crate::routes::artist::dto::Artist>,
         pub explicit: Option<bool>,
         pub available_quality: Option<String>,
         pub status: DownloadJobStatus,
@@ -54,12 +55,17 @@ pub mod dto {
 }
 
 impl dto::DownloadJob {
-    pub(crate) fn from_record(job: JobRecord, album: Option<&album::Model>) -> Self {
+    pub(crate) fn from_record(
+        job: JobRecord,
+        album: Option<&album::Model>,
+        artists: Vec<artist::Model>,
+    ) -> Self {
         let media_tags = album.and_then(catalog::parse_media_tags);
         Self {
             id: job.id,
             album_id: job.album_id,
             release_name: album.map(|album| album.title.clone()),
+            artists: artists.into_iter().map(Into::into).collect(),
             explicit: album.and_then(|album| album.explicit),
             available_quality: tidal::available_quality(media_tags.as_deref()).map(str::to_owned),
             status: job.status.into(),
@@ -99,7 +105,22 @@ pub async fn cancel(
         }
     };
 
-    Ok(Json(dto::DownloadJob::from_record(job, album.as_ref())))
+    let artists = if let Some(album) = &album {
+        catalog::credited_artists_for_album(&db, &album.id)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::error!("Could not load artists for cancelled download: {error:#?}");
+                Vec::new()
+            })
+    } else {
+        Vec::new()
+    };
+
+    Ok(Json(dto::DownloadJob::from_record(
+        job,
+        album.as_ref(),
+        artists,
+    )))
 }
 
 pub async fn list(
@@ -112,13 +133,20 @@ pub async fn list(
         .map(|job| job.album_id.clone())
         .collect();
     let albums = album::Entity::find()
-        .filter(album::Column::Id.is_in(album_ids))
+        .filter(album::Column::Id.is_in(album_ids.iter().cloned()))
         .all(&db)
         .await
         .map_err(|error| {
             tracing::error!("Could not load albums for downloads: {error:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+    let artists_by_album_id =
+        catalog::credited_artists(&db, &album_ids)
+            .await
+            .map_err(|error| {
+                tracing::error!("Could not load artists for downloads: {error:#?}");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
     let albums_by_id = albums
         .into_iter()
         .map(|album| (album.id.clone(), album))
@@ -126,7 +154,11 @@ pub async fn list(
 
     let map_job = |job: JobRecord| {
         let album = albums_by_id.get(&job.album_id);
-        dto::DownloadJob::from_record(job, album)
+        let artists = album
+            .and_then(|album| artists_by_album_id.get(&album.id))
+            .cloned()
+            .unwrap_or_default();
+        dto::DownloadJob::from_record(job, album, artists)
     };
 
     Ok(Json(dto::Downloads {

@@ -492,6 +492,7 @@ async fn queued_selected_download_is_not_cancelled_by_deletion() {
         .find(|job| job["album_id"] == "selected")
         .unwrap();
     assert_eq!(selected["status"], "queued");
+    assert_eq!(selected["artists"], json!([]));
     for field in ["release_name", "explicit", "available_quality"] {
         assert_eq!(selected.get(field), Some(&Value::Null));
     }
@@ -504,6 +505,7 @@ async fn queued_selected_download_is_not_cancelled_by_deletion() {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["artists"], json!([]));
     for field in ["release_name", "explicit", "available_quality"] {
         assert_eq!(cancelled.get(field), Some(&Value::Null));
     }
