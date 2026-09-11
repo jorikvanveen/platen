@@ -34,6 +34,14 @@ running jobs cannot. The page refreshes every two seconds while open, even when
 empty, and keeps the last successful snapshot visible if a refresh fails. History
 describes download attempts, not whether an album is currently on disk.
 
+Scan music at `/import` starts or follows a Music directory scan. Its report
+groups discovery and Tidal import counters into two stage rows, with shared
+catalog-location totals and expandable skipped/failure counts below. Candidates
+processed is a count, not a completion percentage: imports may still be saving
+after every candidate has been processed. Active scans refresh every two seconds;
+failed status requests keep the last snapshot and retry. Scans continue after
+leaving the page, and the server retains only the latest scan until it restarts.
+
 ## Development
 
 Run from this directory:

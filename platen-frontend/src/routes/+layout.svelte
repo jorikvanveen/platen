@@ -42,6 +42,13 @@
 			>
 				Downloads
 			</Button>
+			<Button
+				href={resolve('/import')}
+				variant={page.route.id === '/import' ? 'secondary' : 'ghost'}
+				aria-current={page.route.id === '/import' ? 'page' : undefined}
+			>
+				Scan music
+			</Button>
 		</nav>
 	</div>
 </header>
