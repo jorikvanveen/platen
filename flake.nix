@@ -9,7 +9,7 @@
   ] (system:
     let
       pkgs = nixpkgs.legacyPackages.${system};
-      version = "1.0.0";
+      version = "1.0.1";
     in
     {
       devShell = pkgs.mkShell {
