@@ -7,7 +7,7 @@ use tokio::{
     fs::{self, File},
     io::{self, AsyncWriteExt},
     process::Command,
-    time::{sleep, timeout},
+    time::{Instant, MissedTickBehavior, interval_at, sleep, timeout},
 };
 
 use color_eyre::Report;
@@ -16,10 +16,12 @@ use thiserror::Error;
 
 use crate::{
     entity::album,
-    services::{downloaders::Downloader, tidal::Tidal},
+    services::{download_queue::DownloadQueue, downloaders::Downloader, tidal::Tidal},
 };
 
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
+const REAUTHENTICATION_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const REAUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(30);
 const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_CONSECUTIVE_STATUS_FAILURES: u32 = 3;
 const DOWNLOAD_PROGRESS_PERCENT_INTERVAL: u64 = 5;
@@ -115,6 +117,45 @@ impl Antra {
         tracing::info!("Successfully logged in to antra");
 
         Ok(())
+    }
+
+    pub async fn reauthenticate_periodically(
+        &self,
+        queue: &DownloadQueue,
+        server_started_at: Instant,
+    ) {
+        let mut interval = interval_at(
+            server_started_at + REAUTHENTICATION_INTERVAL,
+            REAUTHENTICATION_INTERVAL,
+        );
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            let reauthentication = async {
+                while !queue.is_empty().await {
+                    sleep(Duration::from_secs(1)).await;
+                }
+
+                tracing::info!("Reauthenticating with Antra");
+                match timeout(REAUTHENTICATION_TIMEOUT, self.login()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::warn!(%error, "Scheduled Antra login failed"),
+                    Err(_) => tracing::warn!("Scheduled Antra login timed out"),
+                }
+            };
+            tokio::pin!(reauthentication);
+
+            loop {
+                // Skip still yields an overdue tick. Consume ticks before completion
+                // so a delayed attempt cannot cause another login immediately after it.
+                tokio::select! {
+                    biased;
+                    _ = interval.tick() => {}
+                    _ = &mut reauthentication => break,
+                }
+            }
+        }
     }
 
     async fn create_job(

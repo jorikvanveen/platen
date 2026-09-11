@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{Database, DatabaseConnection};
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, time::Instant};
 use tracing_subscriber::filter::EnvFilter;
 
 use crate::{
@@ -27,6 +27,7 @@ mod test_support;
 
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
+    let server_started_at = Instant::now();
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("sqlx::query=off".parse()?);
@@ -45,15 +46,22 @@ async fn main() -> color_eyre::Result<()> {
     );
     tidal.login().await?;
 
-    let antra = Antra::new(&config, tidal.clone());
+    let antra = Arc::new(Antra::new(&config, tidal.clone()));
     antra.login().await?;
 
     let db: DatabaseConnection = Database::connect(&config.database_url).await?;
     Migrator::up(&db, None).await?;
 
+    let listener = TcpListener::bind(&config.bind_address).await?;
     let music_directory = MusicDirectory::new(PathBuf::from(&config.music_dir));
     let (queue, worker_handle) =
-        DownloadQueue::start(db.clone(), music_directory.clone(), Arc::new(antra));
+        DownloadQueue::start(db.clone(), music_directory.clone(), antra.clone());
+    let reauthentication_queue = queue.clone();
+    let reauthentication_handle = tokio::spawn(async move {
+        antra
+            .reauthenticate_periodically(&reauthentication_queue, server_started_at)
+            .await;
+    });
     let scan = ScanCoordinator::new(music_directory, db.clone(), Arc::new(tidal.clone()));
     let app = router(AppState {
         tidal,
@@ -61,17 +69,15 @@ async fn main() -> color_eyre::Result<()> {
         scan,
         db,
     });
-    let listener = TcpListener::bind(&config.bind_address).await?;
 
     let server_result = tokio::select! {
         result = axum::serve(listener, app) => result,
-        result = tokio::signal::ctrl_c() => {
-            result.map_err(color_eyre::Report::from)?;
-            Ok(())
-        }
+        result = tokio::signal::ctrl_c() => result,
     };
     worker_handle.abort();
+    reauthentication_handle.abort();
     let _ = worker_handle.await;
+    let _ = reauthentication_handle.await;
     server_result?;
 
     Ok(())

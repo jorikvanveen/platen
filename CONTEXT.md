@@ -103,3 +103,7 @@ A user's request to fetch one Album through Antra and place its audio in the
 Music directory. A job is queued, running, succeeded, failed, or cancelled; only
 a queued job may be cancelled, and only one unfinished job may exist per Album.
 _Avoid_: queue item, Antra job, download request
+
+**Download queue**:
+The set of queued and running Download jobs. Succeeded, failed, and cancelled
+jobs are history and do not prevent the Download queue from being empty.

@@ -116,6 +116,10 @@ impl DownloadQueue {
         Ok(record)
     }
 
+    pub async fn is_empty(&self) -> bool {
+        self.state.lock().await.active.is_empty()
+    }
+
     pub async fn snapshot(&self) -> (Vec<JobRecord>, Vec<JobRecord>) {
         let state = self.state.lock().await;
         (
@@ -225,3 +229,7 @@ impl DownloadWorker {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/services/download_queue.rs"]
+mod tests;
