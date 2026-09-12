@@ -283,16 +283,24 @@ impl Tidal {
     /// and returns only the first page,
     /// which is why this goes through the relationship endpoint instead.
     pub async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
+        self.get_artist_albums_from(id, TIDAL_BASE_URL).await
+    }
+
+    async fn get_artist_albums_from(
+        &self,
+        id: &str,
+        base_url: &str,
+    ) -> Result<Vec<TidalAlbum>, TidalError> {
         const MAX_PAGES: usize = 50;
         let mut albums: Vec<TidalAlbum> = Vec::new();
         let mut next: Option<String> = None;
 
         for page in 0..MAX_PAGES {
             let url = match &next {
-                Some(rel) => format!("{TIDAL_BASE_URL}{rel}"),
+                Some(rel) => format!("{base_url}{rel}"),
                 None => {
                     format!(
-                        "{TIDAL_BASE_URL}/artists/{id}/relationships/albums?include=albums,albums.coverArt"
+                        "{base_url}/artists/{id}/relationships/albums?include=albums,albums.coverArt"
                     )
                 }
             };
@@ -324,12 +332,8 @@ impl Tidal {
             tracing::debug!("tidal: fetching artist {id} albums page {}", page + 1);
         }
 
-        tracing::warn!(
-            "tidal: hit max pages ({MAX_PAGES}) exhausting artist {id} albums; \
-             returning {} albums",
-            albums.len()
-        );
-        Ok(albums)
+        tracing::error!("tidal: hit max pages ({MAX_PAGES}) before exhausting artist {id} albums");
+        Err(TidalError::UnexpectedResponse)
     }
 
     pub async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {

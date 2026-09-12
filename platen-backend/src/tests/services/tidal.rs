@@ -1,4 +1,13 @@
-use std::time::Duration;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+
+use axum::{Router, http::Uri, routing::get};
+use reqwest::StatusCode;
+use serde_json::{Value, json};
+use tokio::net::TcpListener;
+use url::Url;
 
 use crate::services::rate_limit::RateLimit;
 
@@ -272,6 +281,198 @@ fn pagination_preserves_the_cursor_and_enforces_one_configured_country() {
                 .any(|(name, value)| name == "countryCode" && value == "NL")
         );
     }
+}
+
+fn artist_albums_page(page: usize, has_next: bool) -> Value {
+    let next = has_next.then(|| {
+        format!(
+            "/artists/123/relationships/albums?page%5Bcursor%5D={}&include=albums,albums.coverArt&countryCode=US&countryCode=GB",
+            page + 1
+        )
+    });
+    json!({
+        "data": [{"id": page.to_string(), "type": "albums"}],
+        "included": [{
+            "id": page.to_string(),
+            "type": "albums",
+            "attributes": {"title": format!("Album {page}"), "type": "ALBUM", "popularity": 0.5}
+        }],
+        "links": {"next": next}
+    })
+}
+
+async fn fetch_artist_album_pages(
+    pages: Vec<(StatusCode, String)>,
+) -> (Result<Vec<super::TidalAlbum>, super::TidalError>, Vec<Url>) {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let captured_requests = Arc::clone(&requests);
+    let pages = Arc::new(pages);
+    let app = Router::new().route(
+        "/v2/artists/123/relationships/albums",
+        get(move |uri: Uri| {
+            let requests = Arc::clone(&captured_requests);
+            let pages = Arc::clone(&pages);
+            async move {
+                let url = Url::parse(&format!("http://localhost{uri}")).unwrap();
+                let page = url
+                    .query_pairs()
+                    .find(|(name, _)| name == "page[cursor]")
+                    .map(|(_, cursor)| cursor.parse::<usize>().unwrap())
+                    .unwrap_or(1);
+                requests.lock().unwrap().push(url);
+                pages
+                    .get(page - 1)
+                    .cloned()
+                    .unwrap_or((StatusCode::NOT_FOUND, String::new()))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v2", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let tidal = super::Tidal {
+        client: reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap(),
+        auth: Arc::new(tokio::sync::Mutex::new(super::TidalAuth {
+            token: Some("test-token".to_owned()),
+            expires_at: chrono::Utc::now() + Duration::from_secs(60),
+        })),
+        rate_limit: RateLimit::new(Duration::ZERO),
+        client_id: String::new(),
+        client_secret: String::new(),
+        country_code: "NL".to_owned(),
+    };
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        tidal.get_artist_albums_from("123", &base_url),
+    )
+    .await;
+    server.abort();
+    let requests = requests.lock().unwrap().clone();
+    (result.expect("discography request timed out"), requests)
+}
+
+#[tokio::test]
+async fn artist_albums_rejects_remaining_pages_at_the_limit() {
+    let pages = (1..=51)
+        .map(|page| {
+            (
+                StatusCode::OK,
+                artist_albums_page(page, page < 51).to_string(),
+            )
+        })
+        .collect();
+    let (result, requests) = fetch_artist_album_pages(pages).await;
+
+    assert_eq!(requests.len(), 50);
+    assert!(matches!(result, Err(super::TidalError::UnexpectedResponse)));
+}
+
+#[tokio::test]
+async fn artist_albums_accepts_completion_exactly_at_the_limit() {
+    let pages = (1..=50)
+        .map(|page| {
+            (
+                StatusCode::OK,
+                artist_albums_page(page, page < 50).to_string(),
+            )
+        })
+        .collect();
+    let (result, requests) = fetch_artist_album_pages(pages).await;
+
+    assert_eq!(requests.len(), 50);
+    assert_eq!(
+        result
+            .unwrap()
+            .into_iter()
+            .map(|album| album.id)
+            .collect::<Vec<_>>(),
+        (1..=50).map(|page| page.to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn artist_albums_collects_pages_and_preserves_the_configured_territory() {
+    let pages = (1..=3)
+        .map(|page| {
+            (
+                StatusCode::OK,
+                artist_albums_page(page, page < 3).to_string(),
+            )
+        })
+        .collect();
+    let (result, requests) = fetch_artist_album_pages(pages).await;
+    let albums = result.unwrap();
+
+    assert_eq!(requests.len(), 3);
+    assert_eq!(albums.len(), 3);
+    for (index, album) in albums.iter().enumerate() {
+        assert_eq!(album.id, (index + 1).to_string());
+        assert_eq!(album.title, format!("Album {}", index + 1));
+        assert_eq!(album.r#type, "ALBUM");
+        assert_eq!(album.popularity, 0.5);
+        assert!(album.cover_url.is_none());
+        assert!(album.release_date.is_none());
+        assert!(album.explicit.is_none());
+        assert!(album.media_tags.is_none());
+    }
+    for request in requests {
+        assert_eq!(
+            request
+                .query_pairs()
+                .filter(|(name, _)| name == "countryCode")
+                .map(|(_, value)| value.into_owned())
+                .collect::<Vec<_>>(),
+            ["NL"]
+        );
+        assert!(
+            request
+                .query_pairs()
+                .any(|(name, value)| name == "include" && value == "albums,albums.coverArt")
+        );
+    }
+}
+
+#[tokio::test]
+async fn artist_albums_accepts_an_empty_discography() {
+    let (result, requests) = fetch_artist_album_pages(vec![(
+        StatusCode::OK,
+        json!({"data": [], "included": [], "links": {"next": null}}).to_string(),
+    )])
+    .await;
+
+    assert_eq!(requests.len(), 1);
+    assert!(result.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn artist_albums_propagates_http_errors_after_a_successful_page() {
+    let (result, requests) = fetch_artist_album_pages(vec![
+        (StatusCode::OK, artist_albums_page(1, true).to_string()),
+        (StatusCode::SERVICE_UNAVAILABLE, "Unavailable".to_owned()),
+    ])
+    .await;
+
+    assert_eq!(requests.len(), 2);
+    assert!(matches!(result, Err(super::TidalError::UnexpectedResponse)));
+}
+
+#[tokio::test]
+async fn artist_albums_propagates_json_errors_after_a_successful_page() {
+    let (result, requests) = fetch_artist_album_pages(vec![
+        (StatusCode::OK, artist_albums_page(1, true).to_string()),
+        (StatusCode::OK, "{".to_owned()),
+    ])
+    .await;
+
+    assert_eq!(requests.len(), 2);
+    assert!(matches!(result, Err(super::TidalError::Reqwest(error)) if error.is_decode()));
 }
 
 #[test]
