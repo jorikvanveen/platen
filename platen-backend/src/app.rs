@@ -3,15 +3,16 @@ use axum::{
     routing::{delete, get, post},
 };
 use sea_orm::DatabaseConnection;
+use std::sync::Arc;
 
 use crate::{
     routes,
-    services::{download_queue::DownloadQueue, import::ScanCoordinator, tidal::Tidal},
+    services::{download_queue::DownloadQueue, import::ScanCoordinator, tidal::TidalCatalog},
 };
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    pub(crate) tidal: Tidal,
+    pub(crate) tidal: Arc<dyn TidalCatalog>,
     pub(crate) queue: DownloadQueue,
     pub(crate) scan: ScanCoordinator,
     pub(crate) db: DatabaseConnection,

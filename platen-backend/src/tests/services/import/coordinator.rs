@@ -83,6 +83,24 @@ struct GatedCatalog {
 
 #[async_trait::async_trait]
 impl TidalCatalog for GatedCatalog {
+    async fn search_artists(
+        &self,
+        query: &str,
+    ) -> Result<Vec<tidal::TidalArtist>, tidal::TidalError> {
+        EmptyTidalCatalog.search_artists(query).await
+    }
+
+    async fn get_artist(&self, id: &str) -> Result<tidal::TidalArtist, tidal::TidalError> {
+        EmptyTidalCatalog.get_artist(id).await
+    }
+
+    async fn get_artist_albums(
+        &self,
+        id: &str,
+    ) -> Result<Vec<tidal::TidalAlbum>, tidal::TidalError> {
+        EmptyTidalCatalog.get_artist_albums(id).await
+    }
+
     async fn find_album(
         &self,
         _: &str,

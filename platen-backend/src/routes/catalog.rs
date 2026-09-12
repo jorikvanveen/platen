@@ -8,7 +8,7 @@ use url::Url;
 use crate::{
     app::AppState,
     entity::{album, artist},
-    services::tidal::{Tidal, TidalError},
+    services::tidal::{TidalCatalog, TidalError},
 };
 
 pub mod dto {
@@ -120,7 +120,7 @@ trait ArtworkSource {
 }
 
 #[async_trait]
-impl ArtworkSource for Tidal {
+impl ArtworkSource for dyn TidalCatalog {
     async fn album_cover(&self, id: &str) -> Result<Option<String>, TidalError> {
         self.get_album_cover(id).await
     }

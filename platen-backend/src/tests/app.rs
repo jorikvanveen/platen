@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use axum::{Router, body::Body, body::to_bytes, http::Request};
+use axum::{Router, body::Body, body::to_bytes, http::Request, response::Response};
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{ActiveModelTrait, ConnectionTrait, Database, EntityTrait, QueryOrder, Set};
 use tokio::sync::{Notify, Semaphore};
@@ -15,6 +15,8 @@ use tower::ServiceExt;
 
 #[path = "album_deletion.rs"]
 mod album_deletion;
+#[path = "discovery.rs"]
+mod discovery;
 
 use super::*;
 use crate::{
@@ -23,7 +25,6 @@ use crate::{
         downloaders::Downloader,
         import::ScanCoordinator,
         music_directory::MusicDirectory,
-        rate_limit::RateLimit,
         tidal::{ResolvedTidalSearchedAlbum, TidalAlbum, TidalArtist, TidalCatalog, TidalError},
     },
     test_support::mocks::EmptyTidalCatalog,
@@ -87,6 +88,33 @@ impl FakeTidalCatalog {
 
 #[async_trait::async_trait]
 impl TidalCatalog for FakeTidalCatalog {
+    async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
+        EmptyTidalCatalog.search_artists(query).await
+    }
+
+    async fn get_artist(&self, id: &str) -> Result<TidalArtist, TidalError> {
+        self.albums
+            .iter()
+            .flat_map(|record| &record.artists)
+            .find(|artist| artist.id == id)
+            .cloned()
+            .ok_or(TidalError::UnexpectedResponse)
+    }
+
+    async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
+        self.albums
+            .iter()
+            .filter(|record| record.artists.iter().any(|artist| artist.id == id))
+            .map(|record| {
+                if record.failure == Some("discography") {
+                    Err(TidalError::UnexpectedResponse)
+                } else {
+                    Ok(record.album.clone())
+                }
+            })
+            .collect()
+    }
+
     async fn find_album(&self, query: &str) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
         self.searches.lock().unwrap().push(query.to_owned());
         self.search_started.notify_one();
@@ -271,12 +299,7 @@ async fn insert_test_album(db: &DatabaseConnection, id: &str) {
 
 fn app_state(db: DatabaseConnection, queue: DownloadQueue) -> AppState {
     AppState {
-        tidal: Tidal::new(
-            String::new(),
-            String::new(),
-            "NL".to_owned(),
-            RateLimit::new(Duration::ZERO),
-        ),
+        tidal: Arc::new(EmptyTidalCatalog),
         queue,
         scan: ScanCoordinator::new(
             MusicDirectory::new(temp_music_dir()),
@@ -289,6 +312,23 @@ fn app_state(db: DatabaseConnection, queue: DownloadQueue) -> AppState {
 
 fn temp_music_dir() -> PathBuf {
     tempfile::tempdir().unwrap().path().to_path_buf()
+}
+
+async fn send_request(app: Router, method: &str, path: &str, body: &str) -> Response {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        app.oneshot(
+            Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("request deadlocked")
+    .unwrap()
 }
 
 async fn enqueue(app: &Router, album_id: &str) -> serde_json::Value {
@@ -392,12 +432,7 @@ fn scan_app(
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
     let app = router(AppState {
-        tidal: Tidal::new(
-            String::new(),
-            String::new(),
-            "NL".to_owned(),
-            RateLimit::new(Duration::ZERO),
-        ),
+        tidal: source.clone(),
         queue,
         scan: ScanCoordinator::new(music_directory, db.clone(), source),
         db: db.clone(),
@@ -1010,12 +1045,7 @@ async fn catalog_scan_runs_in_the_background_and_retains_its_summary() {
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), downloader);
     let app = router(AppState {
-        tidal: Tidal::new(
-            String::new(),
-            String::new(),
-            "NL".to_owned(),
-            RateLimit::new(Duration::ZERO),
-        ),
+        tidal: Arc::new(EmptyTidalCatalog),
         queue,
         scan: ScanCoordinator::new(
             music_directory.clone(),
@@ -1149,12 +1179,7 @@ async fn catalog_scan_reconciles_locations_without_changing_metadata_and_is_idem
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
     let app = router(AppState {
-        tidal: Tidal::new(
-            String::new(),
-            String::new(),
-            "NL".to_owned(),
-            RateLimit::new(Duration::ZERO),
-        ),
+        tidal: Arc::new(EmptyTidalCatalog),
         queue,
         scan: ScanCoordinator::new(music_directory, db.clone(), Arc::new(EmptyTidalCatalog)),
         db: db.clone(),
@@ -1234,12 +1259,7 @@ async fn catalog_scan_clears_paths_when_the_music_root_is_missing_even_with_fail
     let (queue, worker_handle) =
         DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
     let app = router(AppState {
-        tidal: Tidal::new(
-            String::new(),
-            String::new(),
-            "NL".to_owned(),
-            RateLimit::new(Duration::ZERO),
-        ),
+        tidal: Arc::new(EmptyTidalCatalog),
         queue,
         scan: ScanCoordinator::new(music_directory, db.clone(), Arc::new(EmptyTidalCatalog)),
         db: db.clone(),

@@ -1,5 +1,6 @@
 pub(crate) mod album_files;
 pub(crate) mod catalog;
+pub(crate) mod discovery;
 pub mod download_queue;
 pub mod downloaders;
 pub(crate) mod filesystem;

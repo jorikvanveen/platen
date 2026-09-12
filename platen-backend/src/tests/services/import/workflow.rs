@@ -1,5 +1,6 @@
 use super::*;
 use crate::entity::album;
+use crate::test_support::mocks::EmptyTidalCatalog;
 use crate::{
     entity::{album_artist, artist},
     services::{
@@ -88,6 +89,18 @@ impl FakeCatalog {
 
 #[async_trait::async_trait]
 impl TidalCatalog for FakeCatalog {
+    async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
+        EmptyTidalCatalog.search_artists(query).await
+    }
+
+    async fn get_artist(&self, id: &str) -> Result<TidalArtist, TidalError> {
+        EmptyTidalCatalog.get_artist(id).await
+    }
+
+    async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
+        EmptyTidalCatalog.get_artist_albums(id).await
+    }
+
     async fn find_album(&self, query: &str) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
         if self.search_fails {
             return Err(TidalError::UnexpectedResponse);

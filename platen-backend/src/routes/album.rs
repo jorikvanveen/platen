@@ -97,7 +97,7 @@ pub async fn create(
     State(AppState { tidal, db, .. }): State<AppState>,
     Path(album_id): Path<String>,
 ) -> Result<Json<dto::Album>, StatusCode> {
-    create_with(&db, &tidal, &album_id).await
+    create_with(&db, tidal.as_ref(), &album_id).await
 }
 
 pub(crate) async fn create_with(

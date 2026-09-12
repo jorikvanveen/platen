@@ -29,6 +29,9 @@ pub enum TidalError {
 
 #[async_trait::async_trait]
 pub(crate) trait TidalCatalog: Send + Sync {
+    async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError>;
+    async fn get_artist(&self, id: &str) -> Result<TidalArtist, TidalError>;
+    async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError>;
     async fn find_album(&self, query: &str) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError>;
     async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError>;
     async fn get_album_cover(&self, id: &str) -> Result<Option<String>, TidalError>;
@@ -37,6 +40,18 @@ pub(crate) trait TidalCatalog: Send + Sync {
 
 #[async_trait::async_trait]
 impl TidalCatalog for Tidal {
+    async fn search_artists(&self, query: &str) -> Result<Vec<TidalArtist>, TidalError> {
+        Tidal::search_artists(self, query).await
+    }
+
+    async fn get_artist(&self, id: &str) -> Result<TidalArtist, TidalError> {
+        Tidal::get_artist(self, id).await
+    }
+
+    async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
+        Tidal::get_artist_albums(self, id).await
+    }
+
     async fn find_album(&self, query: &str) -> Result<Vec<ResolvedTidalSearchedAlbum>, TidalError> {
         Tidal::find_album(self, query).await
     }

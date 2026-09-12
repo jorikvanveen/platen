@@ -4,6 +4,21 @@ pub(crate) struct EmptyTidalCatalog;
 
 #[async_trait::async_trait]
 impl TidalCatalog for EmptyTidalCatalog {
+    async fn search_artists(&self, _: &str) -> Result<Vec<tidal::TidalArtist>, tidal::TidalError> {
+        Err(tidal::TidalError::UnexpectedResponse)
+    }
+
+    async fn get_artist(&self, _: &str) -> Result<tidal::TidalArtist, tidal::TidalError> {
+        Err(tidal::TidalError::UnexpectedResponse)
+    }
+
+    async fn get_artist_albums(
+        &self,
+        _: &str,
+    ) -> Result<Vec<tidal::TidalAlbum>, tidal::TidalError> {
+        Err(tidal::TidalError::UnexpectedResponse)
+    }
+
     async fn find_album(
         &self,
         _: &str,

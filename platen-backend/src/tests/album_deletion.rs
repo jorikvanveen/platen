@@ -27,12 +27,7 @@ impl Fixture {
         let (queue, worker) =
             DownloadQueue::start(db.clone(), directory.clone(), downloader.clone());
         let state = AppState {
-            tidal: Tidal::new(
-                String::new(),
-                String::new(),
-                "NL".into(),
-                RateLimit::new(Duration::ZERO),
-            ),
+            tidal: Arc::new(EmptyTidalCatalog),
             queue,
             scan: ScanCoordinator::new(directory.clone(), db.clone(), Arc::new(EmptyTidalCatalog)),
             db: db.clone(),
@@ -82,20 +77,7 @@ impl Drop for Fixture {
 }
 
 async fn request(app: Router, method: &str, path: &str, body: &str) -> (StatusCode, Value) {
-    let response = tokio::time::timeout(
-        Duration::from_secs(5),
-        app.oneshot(
-            Request::builder()
-                .method(method)
-                .uri(path)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_owned()))
-                .unwrap(),
-        ),
-    )
-    .await
-    .expect("request deadlocked")
-    .unwrap();
+    let response = send_request(app, method, path, body).await;
     let status = response.status();
     let expected_content_type = if status.is_success() {
         "application/json"

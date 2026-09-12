@@ -62,7 +62,8 @@ async fn main() -> color_eyre::Result<()> {
             .reauthenticate_periodically(&reauthentication_queue, server_started_at)
             .await;
     });
-    let scan = ScanCoordinator::new(music_directory, db.clone(), Arc::new(tidal.clone()));
+    let tidal = Arc::new(tidal);
+    let scan = ScanCoordinator::new(music_directory, db.clone(), tidal.clone());
     let app = router(AppState {
         tidal,
         queue,
