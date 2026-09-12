@@ -7,15 +7,14 @@ owns the layout of its music directory.
 ## Catalog entities
 
 **Catalog**:
-The set of Artists and Albums platen owns. The source of truth for what
-platen knows about.
+The set of Artists and Albums Platen manages. Knowing an Album's name alone does
+not make it part of the Catalog.
 _Avoid_: library, collection
 
 **Artist**:
-A music artist represented in the catalog, identified by its Tidal artist ID
-and created only when an Album credits it. Users cannot delete Artists directly;
-deleting an Album automatically removes its credited Artists that have no
-remaining Album credits in the catalog.
+A music artist represented in the Catalog, identified by its Tidal artist ID
+and first introduced by an Album credit. An Artist retained through monitoring
+may have no Catalog Album credits, even after monitoring is disabled.
 _Avoid_: musician, performer, act
 
 **Album credit**:
@@ -33,9 +32,9 @@ _Avoid_: main artist, album artist
 **Album**:
 A release represented in the catalog. Identified by its Tidal album ID and
 credited to one or more Artists. An Album enters the catalog when the user adds
-it from Tidal or a user-requested Music directory scan finds exactly one Tidal
-match. A release may be an album, EP, or single. The name "Album" is the entity's
-name, not a claim that every one is a full-length album.
+it from Tidal, Artist monitoring adds it, or a user-requested Music directory scan
+finds exactly one Tidal match. A release may be an album, EP, or single. The name
+"Album" is the entity's name, not a claim that every one is a full-length album.
 _Avoid_: release, record
 
 **Discovery duplicate group**:
@@ -57,6 +56,26 @@ _Avoid_: artist picture, avatar
 An Album whose audio is present in the Music directory, regardless of how it
 arrived there. A Downloaded Album has an Album location; any other Album does not.
 _Avoid_: Present Album, imported Album, installed Album
+
+## Artist monitoring
+
+**Artist monitoring**:
+Automatic discovery of Albums for an Artist and their addition to the Catalog
+and Download queue, independent of release date. Download retries belong to the
+Download queue, not Artist monitoring.
+
+**Monitored Artist**:
+An Artist with Artist monitoring enabled, which may have no remaining Catalog
+Albums.
+
+**Known album entry**:
+A remembered Album title and release type for one Artist, with title case and
+extra whitespace ignored. It is part of the Artist's discovery history, not
+evidence of Catalog membership or downloaded audio.
+
+**Initial baseline**:
+An Artist's first complete set of known album entries.
+These entries distinguish the existing discography from later discoveries.
 
 ## External services
 
@@ -99,9 +118,10 @@ _Avoid_: filesystem import, filesystem watcher, reconciliation
 ## Download workflow
 
 **Download job**:
-A user's request to fetch one Album through Antra and place its audio in the
-Music directory. A job is queued, running, succeeded, failed, or cancelled; only
-a queued job may be cancelled, and only one unfinished job may exist per Album.
+A request by a user or Artist monitoring to fetch one Album through Antra and
+place its audio in the Music directory. A job is queued, running, succeeded,
+failed, or cancelled; only a queued job may be cancelled, and only one unfinished
+job may exist per Album.
 _Avoid_: queue item, Antra job, download request
 
 **Download queue**:
