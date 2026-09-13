@@ -545,10 +545,14 @@ pub(crate) async fn delete(
                 .await?
                 .is_none()
             {
-                artist::Entity::delete_by_id(&credit.artist_id)
+                let removal = artist::Entity::delete_many()
+                    .filter(artist::Column::Id.eq(&credit.artist_id))
+                    .filter(artist::Column::Monitored.eq(false))
                     .exec(&transaction)
                     .await?;
-                removed_artist_ids.push(credit.artist_id);
+                if removal.rows_affected > 0 {
+                    removed_artist_ids.push(credit.artist_id);
+                }
             }
         }
         Ok::<_, sea_orm::DbErr>(removed_artist_ids)

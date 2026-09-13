@@ -7,6 +7,7 @@
 	import ArtistMonitoringCheckbox from '$lib/components/ArtistMonitoringCheckbox.svelte';
 	import ArtistProfileImage from '$lib/components/ArtistProfileImage.svelte';
 	import CatalogAlbumCard from '$lib/components/CatalogAlbumCard.svelte';
+	import RemoveArtistDialog from '$lib/components/RemoveArtistDialog.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import * as Card from '$lib/components/ui/card/index.js';
@@ -161,6 +162,9 @@
 				<div class="empty-state">
 					<Disc3 size={32} strokeWidth={1.5} aria-hidden="true" />
 					<h2>No albums in the catalog yet.</h2>
+					{#key data.artist.id}
+						<RemoveArtistDialog artist={data.artist} />
+					{/key}
 				</div>
 			</Card.Content>
 		</Card.Root>

@@ -23,7 +23,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/artists", get(routes::artist::list))
         .route(
             "/artists/{id}",
-            get(routes::artist::get).patch(routes::artist::update_monitoring),
+            get(routes::artist::get)
+                .patch(routes::artist::update_monitoring)
+                .delete(routes::artist::delete),
         )
         .route(
             "/artists/{artist_id}/albums/{album_id}",
