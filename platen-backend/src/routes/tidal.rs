@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{cmp::Reverse, collections::HashSet};
 
 use axum::{
     Json,
@@ -14,6 +14,7 @@ use crate::{
     app::AppState,
     entity::{album, album_artist},
     services,
+    services::catalog::parse_release_date,
     services::discovery::{AlbumIdentity, select_candidates},
 };
 
@@ -164,7 +165,8 @@ pub async fn get_artist_albums(
     let (artist, albums) = tokio::try_join!(tidal.get_artist(&id), tidal.get_artist_albums(&id))
         .map_err(map_tidal_error)?;
     let returned_count = albums.len();
-    let albums = select_discovery_albums(&db, &id, albums).await?;
+    let mut albums = select_discovery_albums(&db, &id, albums).await?;
+    sort_albums_newest_first(&mut albums);
     Ok(Json(dto::TidalArtistAlbums {
         artist: artist.into(),
         albums: albums.into_iter().map(Into::into).collect(),
@@ -204,6 +206,17 @@ async fn select_discovery_albums(
         error!("{error}");
         StatusCode::BAD_GATEWAY
     })
+}
+
+fn sort_albums_newest_first(albums: &mut [services::tidal::TidalAlbum]) {
+    albums.sort_by_cached_key(|album| {
+        let timeline_position = album
+            .release_date
+            .as_deref()
+            .and_then(|date| parse_release_date(date).ok())
+            .map(|date| Reverse((date.year, date.month.unwrap_or(0), date.day.unwrap_or(0))));
+        (timeline_position.is_none(), timeline_position)
+    });
 }
 
 trait HasAlbumId {

@@ -82,6 +82,12 @@ fn candidate(id: &str, title: &str, release_type: &str) -> ScanAlbum {
     record
 }
 
+fn dated_candidate(id: &str, title: &str, release_type: &str, release_date: &str) -> ScanAlbum {
+    let mut record = candidate(id, title, release_type);
+    record.album.release_date = Some(release_date.to_owned());
+    record
+}
+
 fn album_ids(body: &Value) -> Vec<&str> {
     body["albums"]
         .as_array()
@@ -96,7 +102,8 @@ async fn discovery_normalizes_titles_without_changing_types_metadata_or_group_or
     let fixture = Fixture::new(test_database().await);
     let mut winner = candidate("100", "\t SAME  \n title\u{00a0}", "ALBUM");
     winner.album.cover_url = Some("https://example.test/cover.jpg".to_owned());
-    winner.album.release_date = Some("2001-02-03".to_owned());
+    // A shared release date keeps the newest-first sort out of the group order
+    // this test asserts.
     winner.album.popularity = 0.5;
     winner.album.explicit = Some(true);
     winner.album.media_tags = Some(vec!["LOSSLESS".to_owned()]);
@@ -124,7 +131,7 @@ async fn discovery_normalizes_titles_without_changing_types_metadata_or_group_or
             "title": "\t SAME  \n title\u{00a0}",
             "cover_url": "https://example.test/cover.jpg",
             "album_type": "ALBUM",
-            "release_date": "2001-02-03",
+            "release_date": "2026-01-01",
             "popularity": 0.5,
             "explicit": true,
             "media_tags": ["LOSSLESS"],
@@ -133,6 +140,54 @@ async fn discovery_normalizes_titles_without_changing_types_metadata_or_group_or
     );
     assert_eq!(result["albums"][1]["album_type"], "SINGLE");
     assert_eq!(result["albums"][2]["album_type"], "EP");
+}
+
+#[tokio::test]
+async fn discovery_orders_albums_newest_first_instead_of_by_tidal_order() {
+    let fixture = Fixture::new(test_database().await);
+    // The larger id sits earlier in Tidal's order, so a stable undated tail is
+    // distinguishable from sorting the tail by id.
+    let mut undated_early_position = candidate("90", "Undated sessions", "ALBUM");
+    undated_early_position.album.release_date = None;
+    let mut undated_late_position = candidate("89", "Lost tapes", "ALBUM");
+    undated_late_position.album.release_date = None;
+    let result = fixture
+        .discover(
+            vec![
+                undated_early_position,
+                dated_candidate("103", "Live EP", "EP", "2021-06"),
+                undated_late_position,
+                dated_candidate("100", "Debut", "ALBUM", "1999"),
+                dated_candidate("102", "Anniversary", "ALBUM", "2020-06-15"),
+                dated_candidate("101", "Comeback", "ALBUM", "2020-06"),
+            ],
+            "a-guest",
+        )
+        .await;
+
+    assert_eq!(result["returned_count"], 6);
+    assert_eq!(album_ids(&result), ["103", "102", "101", "100", "90", "89"]);
+}
+
+#[tokio::test]
+async fn discovery_places_a_group_at_the_release_date_of_the_edition_it_shows() {
+    let fixture = Fixture::new(test_database().await);
+    let result = fixture
+        .discover(
+            vec![
+                dated_candidate("99", "Reissue album", "ALBUM", "2005"),
+                dated_candidate("102", "Later", "ALBUM", "2021"),
+                dated_candidate("100", "Reissue album", "ALBUM", "2020"),
+                dated_candidate("101", "Earlier", "ALBUM", "1990"),
+            ],
+            "a-guest",
+        )
+        .await;
+
+    // The higher numeric id (100, dated 2020) wins the "Reissue album" group, so
+    // the group sits at 2020 between its neighbors instead of at its first-seen 2005.
+    assert_eq!(result["returned_count"], 4);
+    assert_eq!(album_ids(&result), ["102", "100", "101"]);
 }
 
 #[tokio::test]
