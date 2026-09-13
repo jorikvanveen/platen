@@ -1,7 +1,8 @@
 <script lang="ts">
-	import { ArrowLeft, Disc3, Plus } from '@lucide/svelte';
+	import { ArrowLeft, Disc3, LoaderCircle, Plus } from '@lucide/svelte';
 	import { tick } from 'svelte';
 	import { goto, invalidate, invalidateAll } from '$app/navigation';
+	import { navigating } from '$app/state';
 	import { resolve } from '$app/paths';
 	import ArtistMonitoringCheckbox from '$lib/components/ArtistMonitoringCheckbox.svelte';
 	import ArtistProfileImage from '$lib/components/ArtistProfileImage.svelte';
@@ -18,6 +19,7 @@
 	let { data }: PageProps = $props();
 	let albums = $derived(data.albums);
 	let downloadJobs = $derived(data.downloadJobs);
+	const isDiscovering = $derived(navigating.to?.route.id === '/artist/[artist_id]/add');
 	let artistHeading: HTMLHeadingElement;
 	let refreshError = $state('');
 	let downloadStatusError = $state('');
@@ -138,8 +140,13 @@
 			<Button
 				href={resolve('/artist/[artist_id]/add', { artist_id: data.artist.id })}
 				class="h-10 px-4"
+				disabled={isDiscovering}
 			>
-				<Plus aria-hidden="true" />
+				{#if isDiscovering}
+					<LoaderCircle class="motion-safe:animate-spin" aria-hidden="true" />
+				{:else}
+					<Plus aria-hidden="true" />
+				{/if}
 				Add release
 			</Button>
 		</div>
