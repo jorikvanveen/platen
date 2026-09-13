@@ -59,6 +59,7 @@ async fn insert_artist(db: &DatabaseConnection, id: &str, profile_image_url: Opt
         id: Set(id.to_owned()),
         name: Set(format!("Artist {id}")),
         profile_image_url: Set(profile_image_url.map(str::to_owned)),
+        ..Default::default()
     }
     .insert(db)
     .await

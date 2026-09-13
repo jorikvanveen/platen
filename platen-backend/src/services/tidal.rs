@@ -25,6 +25,9 @@ pub enum TidalError {
 
     #[error("Failed to authenticate with tidal API: {0}: {1}")]
     AuthenticationFailed(StatusCode, String),
+
+    #[error("Fetching Tidal artist albums exceeded the ten-minute total time limit")]
+    ArtistAlbumsTimeout,
 }
 
 #[async_trait::async_trait]
@@ -306,49 +309,53 @@ impl Tidal {
         id: &str,
         base_url: &str,
     ) -> Result<Vec<TidalAlbum>, TidalError> {
-        const MAX_PAGES: usize = 50;
-        let mut albums: Vec<TidalAlbum> = Vec::new();
-        let mut next: Option<String> = None;
+        tokio::time::timeout(Duration::from_secs(600), async {
+            const MAX_PAGES: usize = 50;
+            let mut albums: Vec<TidalAlbum> = Vec::new();
+            let mut next: Option<String> = None;
 
-        for page in 0..MAX_PAGES {
-            let url = match &next {
-                Some(rel) => format!("{base_url}{rel}"),
-                None => {
-                    format!(
-                        "{base_url}/artists/{id}/relationships/albums?include=albums,albums.coverArt"
-                    )
-                }
-            };
-            let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
-            if !resp.status().is_success() {
-                tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
-                return Err(TidalError::UnexpectedResponse);
-            }
-
-            let doc: ArtistAlbumsRelationshipDocument = resp.json().await?;
-            let artworks: Vec<_> = artwork_resources(&doc.included).collect();
-            for inc in &doc.included {
-                let AlbumSearchIncluded::Album {
-                    id,
-                    attributes,
-                    relationships,
-                } = inc
-                else {
-                    continue;
+            for page in 0..MAX_PAGES {
+                let url = match &next {
+                    Some(rel) => format!("{base_url}{rel}"),
+                    None => {
+                        format!(
+                            "{base_url}/artists/{id}/relationships/albums?include=albums,albums.coverArt"
+                        )
+                    }
                 };
-                let cover_url = select_artwork_url(relationships.cover_art.as_ref(), &artworks);
-                albums.push(TidalAlbum::from(id.clone(), attributes.clone(), cover_url));
+                let resp = self.send_with_retry(self.catalog_request(&url)?).await?;
+                if !resp.status().is_success() {
+                    tracing::error!("tidal: {} {}", resp.status(), resp.text().await?);
+                    return Err(TidalError::UnexpectedResponse);
+                }
+
+                let doc: ArtistAlbumsRelationshipDocument = resp.json().await?;
+                let artworks: Vec<_> = artwork_resources(&doc.included).collect();
+                for inc in &doc.included {
+                    let AlbumSearchIncluded::Album {
+                        id,
+                        attributes,
+                        relationships,
+                    } = inc
+                    else {
+                        continue;
+                    };
+                    let cover_url = select_artwork_url(relationships.cover_art.as_ref(), &artworks);
+                    albums.push(TidalAlbum::from(id.clone(), attributes.clone(), cover_url));
+                }
+
+                next = doc.links.and_then(|l| l.next);
+                if next.is_none() {
+                    return Ok(albums);
+                }
+                tracing::debug!("tidal: fetching artist {id} albums page {}", page + 1);
             }
 
-            next = doc.links.and_then(|l| l.next);
-            if next.is_none() {
-                return Ok(albums);
-            }
-            tracing::debug!("tidal: fetching artist {id} albums page {}", page + 1);
-        }
-
-        tracing::error!("tidal: hit max pages ({MAX_PAGES}) before exhausting artist {id} albums");
-        Err(TidalError::UnexpectedResponse)
+            tracing::error!("tidal: hit max pages ({MAX_PAGES}) before exhausting artist {id} albums");
+            Err(TidalError::UnexpectedResponse)
+        })
+        .await
+        .map_err(|_| TidalError::ArtistAlbumsTimeout)?
     }
 
     pub async fn get_album_artists(&self, id: &str) -> Result<Vec<TidalArtist>, TidalError> {

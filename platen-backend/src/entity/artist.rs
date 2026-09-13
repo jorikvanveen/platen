@@ -10,17 +10,28 @@ pub struct Model {
     pub id: String,
     pub name: String,
     pub profile_image_url: Option<String>,
+    pub monitored: bool,
+    pub monitoring_baseline_initialized_at: Option<DateTimeWithTimeZone>,
+    pub last_check_attempt_at: Option<DateTimeWithTimeZone>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {
     #[sea_orm(has_many = "super::album_artist::Entity")]
     AlbumArtist,
+    #[sea_orm(has_many = "super::artist_known_album::Entity")]
+    ArtistKnownAlbum,
 }
 
 impl Related<super::album_artist::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::AlbumArtist.def()
+    }
+}
+
+impl Related<super::artist_known_album::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::ArtistKnownAlbum.def()
     }
 }
 

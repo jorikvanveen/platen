@@ -3,3 +3,4 @@
 pub use super::album::Entity as Album;
 pub use super::album_artist::Entity as AlbumArtist;
 pub use super::artist::Entity as Artist;
+pub use super::artist_known_album::Entity as ArtistKnownAlbum;

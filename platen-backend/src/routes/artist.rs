@@ -3,7 +3,7 @@ use axum::{
     extract::{Path, State},
 };
 use reqwest::StatusCode;
-use sea_orm::EntityTrait;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, sea_query::Expr};
 use tracing::{error, info};
 
 use crate::{app::AppState, entity::artist};
@@ -18,6 +18,14 @@ pub mod dto {
         pub id: String,
         pub name: String,
         pub profile_image_url: Option<String>,
+        pub monitored: bool,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, TS)]
+    #[serde(deny_unknown_fields)]
+    #[ts(export)]
+    pub struct ArtistMonitoringUpdate {
+        pub monitored: bool,
     }
 }
 
@@ -27,6 +35,7 @@ impl From<artist::Model> for dto::Artist {
             id: model.id,
             name: model.name,
             profile_image_url: model.profile_image_url,
+            monitored: model.monitored,
         }
     }
 }
@@ -43,6 +52,25 @@ pub async fn get(
             error!("DB Error: {e:#?}");
             StatusCode::INTERNAL_SERVER_ERROR
         })?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(artist.into()))
+}
+
+pub async fn update_monitoring(
+    State(AppState { db, .. }): State<AppState>,
+    Path(id): Path<String>,
+    Json(update): Json<dto::ArtistMonitoringUpdate>,
+) -> Result<Json<dto::Artist>, StatusCode> {
+    let artist = artist::Entity::update_many()
+        .col_expr(artist::Column::Monitored, Expr::value(update.monitored))
+        .filter(artist::Column::Id.eq(id))
+        .exec_with_returning(&db)
+        .await
+        .map_err(|error| {
+            error!(%error, "Could not update Artist monitoring preference");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .pop()
         .ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(artist.into()))
 }

@@ -358,6 +358,111 @@ async fn fetch_artist_album_pages(
     (result.expect("discography request timed out"), requests)
 }
 
+async fn assert_artist_albums_total_deadline(retry_after: bool) {
+    use axum::response::IntoResponse;
+    use tokio::sync::{mpsc, oneshot};
+
+    // Real socket I/O must finish before Tokio advances the paused clock.
+    let clock_guard = tokio::spawn(async {
+        loop {
+            tokio::task::yield_now().await;
+        }
+    });
+    let (request_sender, mut requests) = mpsc::unbounded_channel();
+    let app = Router::new().route(
+        "/v2/artists/123/relationships/albums",
+        get(move || {
+            let request_sender = request_sender.clone();
+            async move {
+                let (response_sender, response_receiver) =
+                    oneshot::channel::<axum::response::Response>();
+                request_sender.send(response_sender).unwrap();
+                response_receiver.await.unwrap()
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v2", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let tidal = super::Tidal {
+        // The ordinary fixture's two-second request timeout would mask this deadline.
+        client: reqwest::Client::builder().no_proxy().build().unwrap(),
+        auth: Arc::new(tokio::sync::Mutex::new(super::TidalAuth {
+            token: Some("test-token".to_owned()),
+            expires_at: chrono::Utc::now() + Duration::from_secs(3600),
+        })),
+        rate_limit: RateLimit::new(Duration::ZERO),
+        client_id: String::new(),
+        client_secret: String::new(),
+        country_code: "NL".to_owned(),
+    };
+    let operation = tidal.get_artist_albums_from("123", &base_url);
+    tokio::pin!(operation);
+
+    let first_response = tokio::select! {
+        result = &mut operation => panic!("discography finished before page one: {result:?}"),
+        response = requests.recv() => response.unwrap(),
+    };
+    tokio::time::advance(Duration::from_secs(400)).await;
+    first_response
+        .send(artist_albums_page(1, true).to_string().into_response())
+        .unwrap();
+    let second_response = tokio::select! {
+        result = &mut operation => panic!("discography finished before page two: {result:?}"),
+        response = requests.recv() => response.unwrap(),
+    };
+    if retry_after {
+        second_response
+            .send((StatusCode::TOO_MANY_REQUESTS, [("retry-after", "1200")]).into_response())
+            .unwrap();
+    }
+    // The second page starts with only 200 seconds left, not a new ten-minute budget.
+    tokio::time::advance(Duration::from_secs(199)).await;
+    assert!(futures_util::poll!(&mut operation).is_pending());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(matches!(
+        futures_util::poll!(&mut operation),
+        std::task::Poll::Ready(Err(super::TidalError::ArtistAlbumsTimeout))
+    ));
+    assert!(requests.try_recv().is_err());
+    server.abort();
+    clock_guard.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn artist_albums_timeout_discards_a_successful_page_when_the_next_stalls() {
+    assert_artist_albums_total_deadline(false).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn artist_albums_timeout_includes_retry_after_on_a_later_page() {
+    assert_artist_albums_total_deadline(true).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn artist_albums_timeout_includes_waiting_for_authentication() {
+    let tidal = super::Tidal::new(
+        String::new(),
+        String::new(),
+        "NL".to_owned(),
+        RateLimit::new(Duration::ZERO),
+    );
+    let _auth_lock = tidal.auth.lock().await;
+    let operation = tidal.get_artist_albums("123");
+    tokio::pin!(operation);
+
+    assert!(futures_util::poll!(&mut operation).is_pending());
+    tokio::time::advance(Duration::from_secs(599)).await;
+    assert!(futures_util::poll!(&mut operation).is_pending());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert!(matches!(
+        futures_util::poll!(&mut operation),
+        std::task::Poll::Ready(Err(super::TidalError::ArtistAlbumsTimeout))
+    ));
+}
+
 #[tokio::test]
 async fn artist_albums_rejects_remaining_pages_at_the_limit() {
     let pages = (1..=51)

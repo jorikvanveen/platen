@@ -4,8 +4,8 @@ use super::tidal::TidalAlbum;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct AlbumIdentity {
-    normalized_title: String,
-    release_type: String,
+    pub(crate) normalized_title: String,
+    pub(crate) release_type: String,
 }
 
 impl AlbumIdentity {

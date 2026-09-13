@@ -202,6 +202,7 @@ async fn coordinator_waits_for_music_lock_and_completes_after_reconciliation() {
         id: Set("artist".into()),
         name: Set("Artist".into()),
         profile_image_url: Set(None),
+        ..Default::default()
     }
     .insert(&db)
     .await

@@ -39,6 +39,7 @@ async fn seed(
             id: Set(artist_id.clone()),
             name: Set((*name).into()),
             profile_image_url: Set(None),
+            ..Default::default()
         }
         .insert(db)
         .await

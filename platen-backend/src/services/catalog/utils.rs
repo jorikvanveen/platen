@@ -214,6 +214,7 @@ pub async fn upsert_artist(
         id: ActiveValue::Set(tidal_artist.id.clone()),
         name: ActiveValue::Set(tidal_artist.name.clone()),
         profile_image_url: ActiveValue::Set(tidal_artist.profile_image_url.clone()),
+        ..Default::default()
     })
     .on_conflict_do_nothing()
     .exec(db)

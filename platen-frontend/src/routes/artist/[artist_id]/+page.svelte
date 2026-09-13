@@ -3,6 +3,7 @@
 	import { tick } from 'svelte';
 	import { goto, invalidate, invalidateAll } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import ArtistMonitoringCheckbox from '$lib/components/ArtistMonitoringCheckbox.svelte';
 	import ArtistProfileImage from '$lib/components/ArtistProfileImage.svelte';
 	import CatalogAlbumCard from '$lib/components/CatalogAlbumCard.svelte';
 	import { Badge } from '$lib/components/ui/badge/index.js';
@@ -131,6 +132,9 @@
 		</div>
 
 		<div class="page-actions">
+			{#key data.artist.id}
+				<ArtistMonitoringCheckbox artist={data.artist} />
+			{/key}
 			<Button
 				href={resolve('/artist/[artist_id]/add', { artist_id: data.artist.id })}
 				class="h-10 px-4"
@@ -202,7 +206,10 @@
 	}
 
 	.page-actions {
+		display: flex;
 		flex-shrink: 0;
+		align-items: center;
+		gap: 0.5rem;
 	}
 
 	.album-grid {

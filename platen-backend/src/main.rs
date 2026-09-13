@@ -10,7 +10,7 @@ use crate::{
     config::Config,
     services::{
         download_queue::DownloadQueue, downloaders::antra::Antra, import::ScanCoordinator,
-        music_directory::MusicDirectory, rate_limit::RateLimit, tidal::Tidal,
+        monitoring, music_directory::MusicDirectory, rate_limit::RateLimit, tidal::Tidal,
     },
 };
 
@@ -64,6 +64,7 @@ async fn main() -> color_eyre::Result<()> {
     });
     let tidal = Arc::new(tidal);
     let scan = ScanCoordinator::new(music_directory, db.clone(), tidal.clone());
+    let monitoring_handle = monitoring::start(db.clone(), tidal.clone());
     let app = router(AppState {
         tidal,
         queue,
@@ -77,8 +78,10 @@ async fn main() -> color_eyre::Result<()> {
     };
     worker_handle.abort();
     reauthentication_handle.abort();
+    monitoring_handle.abort();
     let _ = worker_handle.await;
     let _ = reauthentication_handle.await;
+    let _ = monitoring_handle.await;
     server_result?;
 
     Ok(())

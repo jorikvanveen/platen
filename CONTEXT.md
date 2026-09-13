@@ -60,22 +60,31 @@ _Avoid_: Present Album, imported Album, installed Album
 ## Artist monitoring
 
 **Artist monitoring**:
-Automatic discovery of Albums for an Artist and their addition to the Catalog
-and Download queue, independent of release date. Download retries belong to the
-Download queue, not Artist monitoring.
+Opt-in automatic addition of newly observed Albums to the Catalog and Download
+queue, independent of release date. The preference controls automatic downloads,
+not whether the Artist's Monitoring Baseline is initialized or kept up to date.
 
 **Monitored Artist**:
-An Artist with Artist monitoring enabled, which may have no remaining Catalog
-Albums.
+An Artist whose newly observed Albums are eligible for automatic downloads.
+An unmonitored Artist still has its Monitoring Baseline initialized and updated.
 
 **Known album entry**:
 A remembered Album title and release type for one Artist, with title case and
-extra whitespace ignored. It is part of the Artist's discovery history, not
+extra whitespace ignored. It is part of the Artist's Monitoring Baseline, not
 evidence of Catalog membership or downloaded audio.
 
-**Initial baseline**:
-An Artist's first complete set of known album entries.
-These entries distinguish the existing discography from later discoveries.
+**Monitoring Baseline**:
+An Artist's accumulated Known album entries, used to distinguish known Albums
+from new discoveries. It starts with the first successful discography observation,
+even if empty, and grows with later successful observations regardless of the
+Artist's monitoring preference or download outcomes.
+_Avoid_: baseline, initial baseline
+
+**Newly observed Album**:
+An Album whose title-and-release-type pair is not yet in the Artist's Monitoring
+Baseline when a successful post-initialization observation finds it. Its release
+date does not affect this classification.
+_Avoid_: newly released Album
 
 ## External services
 

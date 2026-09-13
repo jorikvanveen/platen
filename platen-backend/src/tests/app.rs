@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex as StdMutex,
@@ -17,6 +18,8 @@ use tower::ServiceExt;
 mod album_deletion;
 #[path = "discovery.rs"]
 mod discovery;
+#[path = "monitoring.rs"]
+mod monitoring;
 
 use super::*;
 use crate::{
@@ -75,6 +78,10 @@ struct FakeTidalCatalog {
     search_started: Notify,
     searches: StdMutex<Vec<String>>,
     metadata_calls: StdMutex<Vec<String>>,
+    discography_responses_by_artist_id:
+        StdMutex<HashMap<String, Result<Vec<TidalAlbum>, TidalError>>>,
+    discography_gates_by_artist_id: HashMap<String, Arc<Semaphore>>,
+    discography_started: Notify,
 }
 
 impl FakeTidalCatalog {
@@ -102,6 +109,18 @@ impl TidalCatalog for FakeTidalCatalog {
     }
 
     async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
+        let response = self
+            .discography_responses_by_artist_id
+            .lock()
+            .unwrap()
+            .remove(id);
+        if let Some(gate) = self.discography_gates_by_artist_id.get(id) {
+            self.discography_started.notify_one();
+            gate.acquire().await.unwrap().forget();
+        }
+        if let Some(response) = response {
+            return response;
+        }
         self.albums
             .iter()
             .filter(|record| record.artists.iter().any(|artist| artist.id == id))
@@ -1145,6 +1164,7 @@ async fn catalog_scan_reconciles_locations_without_changing_metadata_and_is_idem
         id: Set("a-guest".to_owned()),
         name: Set("Guest artist".to_owned()),
         profile_image_url: Set(Some("https://example.test/guest".to_owned())),
+        ..Default::default()
     }
     .insert(&db)
     .await
@@ -1408,6 +1428,7 @@ async fn download_responses_resolve_current_catalog_metadata() {
                     id: Set(artist_id.clone()),
                     name: Set(name.to_owned()),
                     profile_image_url: Set(Some(format!("https://example.com/{artist_id}.jpg"))),
+                    ..Default::default()
                 }
                 .insert(&db)
                 .await
@@ -1443,9 +1464,9 @@ async fn download_responses_resolve_current_catalog_metadata() {
             assert_eq!(
                 job["artists"],
                 json!([
-                    {"id": format!("artist-{album_id}"), "name": "Test artist", "profile_image_url": null},
-                    {"id": format!("z-{album_id}"), "name": "Second artist", "profile_image_url": format!("https://example.com/z-{album_id}.jpg")},
-                    {"id": format!("a-{album_id}"), "name": "Third artist", "profile_image_url": format!("https://example.com/a-{album_id}.jpg")}
+                    {"id": format!("artist-{album_id}"), "name": "Test artist", "profile_image_url": null, "monitored": false},
+                    {"id": format!("z-{album_id}"), "name": "Second artist", "profile_image_url": format!("https://example.com/z-{album_id}.jpg"), "monitored": false},
+                    {"id": format!("a-{album_id}"), "name": "Third artist", "profile_image_url": format!("https://example.com/a-{album_id}.jpg"), "monitored": false}
                 ])
             );
             assert_eq!(job.get("explicit"), Some(&json!(explicit)));

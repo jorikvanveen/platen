@@ -5,6 +5,7 @@ pub mod download_queue;
 pub mod downloaders;
 pub(crate) mod filesystem;
 pub(crate) mod import;
+pub(crate) mod monitoring;
 pub(crate) mod music_directory;
 pub(crate) mod rate_limit;
 pub mod tidal;
