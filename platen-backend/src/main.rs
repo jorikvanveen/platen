@@ -64,7 +64,7 @@ async fn main() -> color_eyre::Result<()> {
     });
     let tidal = Arc::new(tidal);
     let scan = ScanCoordinator::new(music_directory, db.clone(), tidal.clone());
-    let monitoring_handle = monitoring::start(db.clone(), tidal.clone());
+    let monitoring_handle = monitoring::start(db.clone(), tidal.clone(), queue.clone());
     let app = router(AppState {
         tidal,
         queue,

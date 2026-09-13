@@ -82,6 +82,9 @@ struct FakeTidalCatalog {
         StdMutex<HashMap<String, Result<Vec<TidalAlbum>, TidalError>>>,
     discography_gates_by_artist_id: HashMap<String, Arc<Semaphore>>,
     discography_started: Notify,
+    discography_calls: StdMutex<Vec<String>>,
+    metadata_gate: Option<Arc<Semaphore>>,
+    metadata_started: Notify,
 }
 
 impl FakeTidalCatalog {
@@ -109,6 +112,7 @@ impl TidalCatalog for FakeTidalCatalog {
     }
 
     async fn get_artist_albums(&self, id: &str) -> Result<Vec<TidalAlbum>, TidalError> {
+        self.discography_calls.lock().unwrap().push(id.to_owned());
         let response = self
             .discography_responses_by_artist_id
             .lock()
@@ -171,6 +175,10 @@ impl TidalCatalog for FakeTidalCatalog {
 
     async fn get_album(&self, id: &str) -> Result<TidalAlbum, TidalError> {
         self.metadata_calls.lock().unwrap().push(id.to_owned());
+        if let Some(gate) = &self.metadata_gate {
+            self.metadata_started.notify_one();
+            gate.acquire().await.unwrap().forget();
+        }
         let record = self.album(id);
         if record.failure == Some("metadata") {
             return Err(TidalError::UnexpectedResponse);
