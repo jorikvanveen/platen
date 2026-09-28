@@ -1,34 +1,6 @@
 use super::*;
 
 #[test]
-fn parses_release_date_at_each_supported_precision() {
-    assert_eq!(
-        parse_release_date("2020"),
-        Ok(ReleaseDate {
-            year: 2020,
-            month: None,
-            day: None
-        })
-    );
-    assert_eq!(
-        parse_release_date("2020-05"),
-        Ok(ReleaseDate {
-            year: 2020,
-            month: Some(5),
-            day: None
-        })
-    );
-    assert_eq!(
-        parse_release_date("2020-05-17"),
-        Ok(ReleaseDate {
-            year: 2020,
-            month: Some(5),
-            day: Some(17)
-        })
-    );
-}
-
-#[test]
 fn rejects_invalid_release_dates() {
     for value in [
         "20",

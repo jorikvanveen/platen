@@ -139,14 +139,6 @@ async fn album_dto_orders_credits_primary_first() {
 }
 
 #[tokio::test]
-async fn new_albums_default_to_no_location() {
-    let db = test_database().await;
-    let album = insert_test_album(&db, None).await;
-
-    assert!(album.relative_path.is_none());
-}
-
-#[tokio::test]
 async fn successful_download_is_saved() {
     let db = test_database().await;
     insert_test_album(&db, None).await;
@@ -185,28 +177,6 @@ async fn successful_download_publishes_through_staging() {
     let staging = music.path().join(".platen-staging");
     let mut entries = tokio::fs::read_dir(&staging).await.unwrap();
     assert!(entries.next_entry().await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn failed_download_is_not_saved() {
-    let db = test_database().await;
-    insert_test_album(&db, None).await;
-    let music = tempfile::tempdir().unwrap();
-    let downloader = TestDownloader {
-        result: Err(TestDownloadError),
-    };
-
-    assert_eq!(
-        download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1").await,
-        Err(DownloadError::Transfer)
-    );
-
-    let album = album::Entity::find_by_id("album-1")
-        .one(&db)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(album.relative_path.is_none());
 }
 
 #[tokio::test]

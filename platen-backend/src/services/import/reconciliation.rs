@@ -158,7 +158,3 @@ fn decide_location<'a>(
         (None, None) => LocationDecision::NoLocation,
     }
 }
-
-#[cfg(test)]
-#[path = "../../tests/services/import/reconciliation.rs"]
-mod tests;

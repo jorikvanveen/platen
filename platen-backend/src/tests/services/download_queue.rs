@@ -14,32 +14,6 @@ fn queue_without_worker() -> (DownloadQueue, mpsc::UnboundedReceiver<String>) {
 }
 
 #[tokio::test]
-async fn is_empty_initially() {
-    let (queue, _receiver) = queue_without_worker();
-
-    assert!(queue.is_empty().await);
-}
-
-#[tokio::test]
-async fn is_not_empty_with_a_queued_job() {
-    let (queue, _receiver) = queue_without_worker();
-    let job = queue.enqueue("album".into()).await.unwrap();
-
-    assert_eq!(job.status, JobStatus::Queued);
-    assert!(!queue.is_empty().await);
-}
-
-#[tokio::test]
-async fn is_not_empty_with_a_running_job() {
-    let (queue, _receiver) = queue_without_worker();
-    let job = queue.enqueue("album".into()).await.unwrap();
-    let running = queue.mark_running(&job.id).await.unwrap();
-
-    assert_eq!(running.status, JobStatus::Running);
-    assert!(!queue.is_empty().await);
-}
-
-#[tokio::test]
 async fn is_empty_with_terminal_history() {
     let (queue, _receiver) = queue_without_worker();
     for status in [

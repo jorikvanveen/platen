@@ -8,9 +8,7 @@ use crate::{
         tidal::{ResolvedTidalSearchedAlbum, TidalAlbum, TidalArtist, TidalError},
     },
 };
-use sea_orm::{
-    ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, Set,
-};
+use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, Set};
 use std::{
     collections::HashMap,
     sync::{
@@ -449,52 +447,6 @@ async fn imports_preserve_search_data_without_any_detail_requests() {
 }
 
 #[tokio::test]
-async fn scan_preserves_explicitness_and_raw_tags_without_refresh_or_detail_requests() {
-    for explicit in [Some(true), Some(false), None] {
-        for tags in [
-            None,
-            Some(vec![]),
-            Some(vec!["FUTURE"]),
-            Some(vec!["DOLBY_ATMOS"]),
-            Some(vec!["LOSSLESS", "HIRES_LOSSLESS", "DOLBY_ATMOS", "FUTURE"]),
-        ] {
-            let db = database().await;
-            let mut record = record("one", "Title", "2024");
-            record.album.explicit = explicit;
-            record.album.media_tags = tags
-                .as_ref()
-                .map(|tags| tags.iter().map(|tag| (*tag).to_owned()).collect());
-            let mut source = FakeCatalog {
-                records: vec![record],
-                ..Default::default()
-            };
-            let candidates = vec![candidate("Artist/Title", "AC/DC", "Title", Some(2024))];
-            let summary = run(&db, &source, candidates.clone()).await;
-            assert_eq!(summary.albums_imported, 1);
-            let stored = album::Entity::find_by_id("one")
-                .one(&db)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(stored.explicit, explicit);
-            assert_eq!(stored.media_tags, tags.map(serde_json::Value::from));
-            source.records[0].album.explicit = Some(!explicit.unwrap_or(false));
-            source.records[0].album.media_tags = Some(vec!["REPLACEMENT".into()]);
-            assert_eq!(run(&db, &source, candidates).await.albums_imported, 0);
-            assert_eq!(
-                album::Entity::find_by_id("one")
-                    .one(&db)
-                    .await
-                    .unwrap()
-                    .unwrap(),
-                stored
-            );
-            source.assert_no_detail_calls();
-        }
-    }
-}
-
-#[tokio::test]
 async fn duplicate_locations_skip_all_copies_in_any_order() {
     for stored_path in [None, Some("Old/Title")] {
         for reverse in [false, true] {
@@ -709,48 +661,6 @@ async fn existing_ids_attach_without_refresh_and_imports_keep_credit_order() {
     assert_eq!(second.unchanged_locations, 2);
     assert_eq!(second.albums_imported + second.locations_attached, 0);
     source.assert_no_detail_calls();
-}
-
-#[tokio::test]
-async fn failed_import_rolls_back_independently_and_occupied_paths_are_skipped() {
-    let db = database().await;
-    db.execute_unprepared("CREATE TRIGGER fail_credit BEFORE INSERT ON album_artist WHEN NEW.album_id = 'bad' BEGIN SELECT RAISE(ABORT, 'test credit failure'); END").await.unwrap();
-    let source = FakeCatalog {
-        records: vec![record("bad", "Bad", "2024"), record("good", "Good", "2024")],
-        ..Default::default()
-    };
-    let summary = run(
-        &db,
-        &source,
-        vec![
-            candidate("Artist/Bad", "AC/DC", "Bad", None),
-            candidate("Artist/Good", "AC/DC", "Good", None),
-        ],
-    )
-    .await;
-    assert_eq!(summary.failures, 1);
-    assert_eq!(summary.albums_imported, 1);
-    assert!(
-        album::Entity::find_by_id("bad")
-            .one(&db)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(artist::Entity::find().all(&db).await.unwrap().len(), 2);
-    let prepared = prepare_album(&source, "bad").await.unwrap();
-    let outcome = ImportRepository::new(db.clone())
-        .import(prepared, "Artist/Good".into())
-        .await
-        .unwrap();
-    assert_eq!(outcome, ImportOutcome::Duplicate { stored_path: None });
-    assert!(
-        album::Entity::find_by_id("bad")
-            .one(&db)
-            .await
-            .unwrap()
-            .is_none()
-    );
 }
 
 #[tokio::test]

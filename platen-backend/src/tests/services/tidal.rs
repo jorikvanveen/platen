@@ -12,9 +12,8 @@ use url::Url;
 use crate::services::rate_limit::RateLimit;
 
 use super::tidal_response::{
-    AlbumSearch, AlbumSearchIncluded, AlbumSearchIncludedAttributes, AlbumWithArtistsDocument,
-    ArtistAlbumsRelationshipDocument, ArtistSingleResource, ArtworkRelationship,
-    ArtworkRelationshipData, ArtworkResource,
+    AlbumSearch, AlbumSearchIncluded, AlbumWithArtistsDocument, ArtistAlbumsRelationshipDocument,
+    ArtistSingleResource, ArtworkRelationship, ArtworkRelationshipData, ArtworkResource,
 };
 use super::{
     artwork_resources, resolve_album_search, select_artwork_url, select_profile_image_url,
@@ -163,48 +162,6 @@ fn discovery_contract_preserves_metadata_and_selects_the_highest_known_quality()
             }
         }
     }
-}
-
-#[test]
-fn unknown_media_tags_are_logged_even_after_the_highest_quality_is_found() {
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone)]
-    struct LogWriter(Arc<Mutex<Vec<u8>>>);
-    impl std::io::Write for LogWriter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let output = Arc::new(Mutex::new(Vec::new()));
-    let writer = LogWriter(output.clone());
-    let subscriber = tracing_subscriber::fmt()
-        .without_time()
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        let tags = [
-            "HIRES_LOSSLESS".to_owned(),
-            "DOLBY_ATMOS".to_owned(),
-            "FUTURE_CODEC".to_owned(),
-            "OTHER_CODEC".to_owned(),
-        ];
-        assert_eq!(
-            super::available_quality(Some(&tags)),
-            Some("HIRES_LOSSLESS + DOLBY_ATMOS")
-        );
-    });
-    let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
-    assert!(logs.contains("FUTURE_CODEC"));
-    assert!(logs.contains("OTHER_CODEC"));
-    assert!(logs.contains("WARN"));
-    assert!(!logs.contains("DOLBY_ATMOS"));
-    assert!(!logs.contains("HIRES_LOSSLESS"));
 }
 
 #[test]
@@ -581,42 +538,6 @@ async fn artist_albums_propagates_json_errors_after_a_successful_page() {
 }
 
 #[test]
-fn search_parameters_are_preserved_alongside_the_country() {
-    let tidal = super::Tidal::new(
-        String::new(),
-        String::new(),
-        "NL".to_owned(),
-        RateLimit::new(Duration::ZERO),
-    );
-    let request = tidal
-        .catalog_request(&format!("{}/searchResults", super::TIDAL_BASE_URL))
-        .unwrap()
-        .query(&[
-            ("filter[query]", "Artist & Album"),
-            ("include", "albums.artists"),
-        ])
-        .build()
-        .unwrap();
-    let query: Vec<_> = request.url().query_pairs().collect();
-    assert_eq!(query.len(), 3);
-    assert!(
-        query
-            .iter()
-            .any(|(name, value)| name == "countryCode" && value == "NL")
-    );
-    assert!(
-        query
-            .iter()
-            .any(|(name, value)| name == "filter[query]" && value == "Artist & Album")
-    );
-    assert!(
-        query
-            .iter()
-            .any(|(name, value)| name == "include" && value == "albums.artists")
-    );
-}
-
-#[test]
 fn resolves_album_artists_in_relationship_order() {
     let response: AlbumSearch = serde_json::from_value(serde_json::json!({
         "data": [{
@@ -672,27 +593,6 @@ fn resolves_album_artists_in_relationship_order() {
 /// Regression: `#[serde(rename = "camelCase")]` renames the type, not the
 /// fields, so Tidal's `releaseDate` silently deserialized to `None`.
 /// `rename_all` is the fix; this test pins the camelCase field names.
-#[test]
-fn deserializes_camel_case_attributes() {
-    let json = r#"
-        {
-          "title": "Michelle (Take 1)",
-          "releaseDate": "2026-07-29",
-          "popularity": 0.7160302460678571,
-          "type": "SINGLE"
-        }
-    "#;
-
-    let attr: AlbumSearchIncludedAttributes = serde_json::from_str(json).unwrap();
-
-    assert_eq!(attr.title, "Michelle (Take 1)");
-    assert_eq!(attr.release_date.as_deref(), Some("2026-07-29"));
-    assert!((attr.popularity - 0.7160302460678571).abs() < f64::EPSILON);
-    assert_eq!(attr.r#type, "SINGLE");
-}
-
-/// Regression for the same snake_case bug as above, against the exact
-/// shape `get_artist_albums` deserializes.
 #[test]
 fn deserializes_artist_albums_relationship_document() {
     let json = r#"

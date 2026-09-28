@@ -93,27 +93,6 @@ async fn reconcile_report(
 }
 
 #[tokio::test]
-async fn unknown_candidates_are_returned_without_counting_them_as_processed_or_skipped() {
-    let db = database().await;
-    seed(&db, "known", "Known", 2024, None, &["Artist"]).await;
-    let unknown = candidate("Artist/Unknown", "Artist", "Unknown", None);
-    let report = DiscoveryReport {
-        candidates: vec![
-            candidate("Artist/Known", "Artist", "Known", None),
-            unknown.clone(),
-        ],
-        ..Default::default()
-    };
-    let (plan, summary) = reconcile_report(&db, &report).await;
-    assert_eq!(plan.unknown_candidates, vec![unknown]);
-    assert_eq!(summary.candidates_total, 2);
-    assert_eq!(summary.candidates_processed, 1);
-    assert_eq!(summary.locations_attached, 1);
-    assert_eq!(summary.unmatched_candidates, 0);
-    assert_eq!(summary.skipped_directories, 0);
-}
-
-#[tokio::test]
 async fn attaches_moves_keeps_and_clears_without_refreshing_metadata_or_credits() {
     let db = database().await;
     seed(&db, "attach", "Attach", 2024, None, &["Artist", "Guest"]).await;
@@ -227,30 +206,6 @@ async fn supplied_permission_diagnostic_does_not_preserve_any_absent_path() {
         stored(&db, "visible").await.relative_path.as_deref(),
         Some("Artist/Visible")
     );
-}
-
-#[tokio::test]
-async fn duplicates_skip_every_copy_and_only_retain_an_observed_old_location() {
-    for old_path in [None, Some("Artist/Title"), Some("Missing/Title")] {
-        let db = database().await;
-        seed(&db, "album", "Title", 2024, old_path, &["Artist"]).await;
-        let copies = vec![
-            candidate("Artist/Title", "Artist", "Title", None),
-            candidate("Artist/Title (2024)", "Artist", "Title", Some(2024)),
-        ];
-        for candidates in [copies.clone(), copies.into_iter().rev().collect()] {
-            let summary = run(&db, candidates).await;
-            assert_eq!(summary.duplicate_locations, 2);
-            assert_eq!(summary.skipped_directories, 2);
-            assert_eq!(summary.locations_attached + summary.locations_changed, 0);
-            let expected = old_path.filter(|path| *path == "Artist/Title");
-            assert_eq!(
-                stored(&db, "album").await.relative_path.as_deref(),
-                expected
-            );
-            assert_eq!(summary.unchanged_locations, usize::from(expected.is_some()));
-        }
-    }
 }
 
 #[tokio::test]

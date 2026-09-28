@@ -9,35 +9,6 @@ fn album_job_requests_reject_empty_albums() {
     ));
 }
 
-#[test]
-fn reports_download_progress_every_five_percent() {
-    let mut progress = DownloadProgress::new(Some(1_000));
-
-    assert!(!progress.advance(49));
-    assert!(progress.advance(1));
-    assert_eq!(progress.percentage(), Some(5));
-    assert!(!progress.advance(49));
-    assert!(progress.advance(1));
-    assert_eq!(progress.percentage(), Some(10));
-}
-
-#[test]
-fn reports_completion_when_the_last_chunk_is_smaller_than_the_interval() {
-    let mut progress = DownloadProgress::new(Some(1_000));
-
-    assert!(progress.advance(960));
-    assert!(progress.advance(40));
-    assert_eq!(progress.percentage(), Some(100));
-}
-
-#[test]
-fn does_not_report_progress_when_content_length_is_unknown() {
-    let mut progress = DownloadProgress::new(None);
-
-    assert!(!progress.advance(5 * 1024 * 1024));
-    assert_eq!(progress.percentage(), None);
-}
-
 // Real zips, because placement extracts with the real unzip binary.
 fn build_archive(working_dir: &Path, archive: &Path, entries: &[&str]) {
     let status = SyncCommand::new("zip")

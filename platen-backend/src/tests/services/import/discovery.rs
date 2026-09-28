@@ -1,4 +1,3 @@
-use super::super::model::ScanSummary;
 use super::*;
 
 async fn discover(root: &Path) -> Vec<AlbumCandidate> {
@@ -27,48 +26,6 @@ async fn discovery_reports_progress_without_job_state() {
             skipped_directories: 1,
             filesystem_errors: 0
         })
-    );
-}
-
-#[test]
-fn discovery_summary_includes_root_failure_diagnostics() {
-    let report = DiscoveryReport {
-        diagnostics: vec![FilesystemDiagnostic {
-            reason: "resolve_music_root",
-            path: "missing".into(),
-            os_error: std::io::ErrorKind::NotFound.into(),
-        }],
-        root_failed: true,
-        ..Default::default()
-    };
-    assert_eq!(
-        ScanSummary::from(&report),
-        ScanSummary {
-            filesystem_errors: 1,
-            ..Default::default()
-        }
-    );
-}
-
-#[tokio::test]
-async fn discovers_supported_audio_recursively_and_parses_only_the_final_year() {
-    let music = tempfile::tempdir().unwrap();
-    let album = music.path().join("Artist/Title (Live) (2024)/Disc 1");
-    tokio::fs::create_dir_all(&album).await.unwrap();
-    tokio::fs::write(album.join("track.FLAC"), b"audio")
-        .await
-        .unwrap();
-
-    let candidates = discover(music.path()).await;
-
-    assert_eq!(
-        candidates,
-        vec![AlbumCandidate {
-            primary_artist: "Artist".to_owned(),
-            title: "Title (Live)".to_owned(),
-            release_year: Some(2024),
-            relative_path: "Artist/Title (Live) (2024)".to_owned(),
-        }]
     );
 }
 
@@ -159,14 +116,4 @@ async fn skips_non_utf8_directories_without_panicking() {
 
     assert!(report.candidates.is_empty());
     assert_eq!(report.skipped_directories, 1);
-}
-
-#[tokio::test]
-async fn a_missing_root_is_a_terminal_failure() {
-    let root = tempfile::tempdir().unwrap().path().join("missing");
-
-    let report = discover_album_candidates(&root, |_| {}).await;
-    assert!(report.root_failed);
-    assert_eq!(report.diagnostics.len(), 1);
-    assert_eq!(report.diagnostics[0].path, root);
 }

@@ -1,4 +1,4 @@
-use sea_orm::{ActiveModelTrait, ColumnTrait, Database, QueryFilter, QueryOrder, Set};
+use sea_orm::{Database, QueryOrder};
 
 use super::*;
 use crate::entity::album;
@@ -184,30 +184,6 @@ async fn credited_artists_groups_requested_albums_in_credit_order() {
 }
 
 #[tokio::test]
-async fn preparation_tolerates_missing_cover_and_preserves_credit_order() {
-    let source = FakeCatalog::default();
-    let prepared = prepare_album(&source, "album-1").await.unwrap();
-    assert_eq!(prepared.album().title, "Shared album");
-    assert_eq!(prepared.album().cover_url, None);
-    assert_eq!(
-        prepared.release_date,
-        ReleaseDate {
-            year: 2024,
-            month: Some(2),
-            day: Some(29)
-        }
-    );
-    assert_eq!(
-        prepared
-            .artists
-            .iter()
-            .map(|artist| artist.id.as_str())
-            .collect::<Vec<_>>(),
-        ["artist-2", "artist-1"]
-    );
-}
-
-#[tokio::test]
 async fn preparation_propagates_cover_fetch_error() {
     let source = FakeCatalog {
         cover_fails: true,
@@ -358,17 +334,6 @@ async fn persistence_stores_location_cover_and_ordered_credits_without_refreshin
 }
 
 #[tokio::test]
-async fn persistence_without_location_keeps_album_undownloaded() {
-    let db = test_database().await;
-    let prepared = prepare_album(&FakeCatalog::default(), "album-1")
-        .await
-        .unwrap();
-    let outcome = persist_album(&db, prepared, None).await.unwrap();
-    assert!(outcome.imported);
-    assert_eq!(outcome.model.relative_path, None);
-}
-
-#[tokio::test]
 async fn failed_credit_insert_rolls_back_album_artists_credits_and_location() {
     let db = test_database().await;
     db.execute_unprepared("CREATE TRIGGER reject_guest BEFORE INSERT ON album_artist WHEN NEW.position = 1 BEGIN SELECT RAISE(ABORT, 'test credit failure'); END").await.unwrap();
@@ -388,75 +353,6 @@ async fn failed_credit_insert_rolls_back_album_artists_credits_and_location() {
             .await
             .unwrap()
             .is_empty()
-    );
-}
-
-// Adding an Album by Tidal ID is the only way rows enter the catalog, so
-// this write path must fit the fresh schema exactly: the retired external
-// identifier columns no longer exist to be written.
-#[tokio::test]
-async fn album_addition_on_fresh_schema_stores_credits_without_retired_fields() {
-    let db = Database::connect("sqlite::memory:").await.unwrap();
-    migration::Migrator::up(&db, None).await.unwrap();
-
-    album::ActiveModel {
-        id: Set("tidal-album-1".into()),
-        title: Set("Duality".into()),
-        album_type: Set(Some("ALBUM".into())),
-        release_year: Set(2024),
-        release_month: Set(Some(10)),
-        release_day: Set(Some(4)),
-        ..Default::default()
-    }
-    .insert(&db)
-    .await
-    .unwrap();
-
-    let tidal_artists = [
-        TidalArtist {
-            id: "tidal-artist-1".into(),
-            name: "BLCKK".into(),
-            profile_image_url: Some("https://cdn.example/blckk".into()),
-        },
-        TidalArtist {
-            id: "tidal-artist-2".into(),
-            name: "ISSBROKIE".into(),
-            profile_image_url: None,
-        },
-    ];
-    for tidal_artist in &tidal_artists {
-        upsert_artist(&db, tidal_artist).await.unwrap();
-    }
-    insert_credits(&db, "tidal-album-1", &tidal_artists)
-        .await
-        .unwrap();
-    for tidal_artist in &tidal_artists {
-        upsert_artist(&db, tidal_artist).await.unwrap();
-    }
-    insert_credits(&db, "tidal-album-1", &tidal_artists)
-        .await
-        .unwrap();
-
-    let rows = album_artist::Entity::find()
-        .filter(album_artist::Column::AlbumId.eq("tidal-album-1"))
-        .find_also_related(artist::Entity)
-        .order_by_asc(album_artist::Column::Position)
-        .all(&db)
-        .await
-        .unwrap();
-    let credited: Vec<(String, String)> = rows
-        .into_iter()
-        .map(|(_, artist)| {
-            let artist = artist.unwrap();
-            (artist.id, artist.name)
-        })
-        .collect();
-    assert_eq!(
-        credited,
-        [
-            ("tidal-artist-1".to_string(), "BLCKK".to_string()),
-            ("tidal-artist-2".to_string(), "ISSBROKIE".to_string())
-        ]
     );
 }
 

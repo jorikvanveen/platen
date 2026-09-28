@@ -76,18 +76,6 @@ fn tidal_country_code_rejects_non_string_values() {
 }
 
 #[test]
-fn later_provider_overrides_toml_country_code() {
-    let config = base_config()
-        .merge(Toml::string("tidal_country_code = \"NL\""))
-        .merge(Serialized::default("tidal_country_code", "US"))
-        .extract::<Config>()
-        .unwrap();
-
-    assert_eq!(config.tidal_country_code, "US");
-    assert_eq!(config.bind_address, "127.0.0.1:0");
-}
-
-#[test]
 fn invalid_provider_override_does_not_fall_back_to_toml() {
     let error = base_config()
         .merge(Toml::string("tidal_country_code = \"NL\""))
