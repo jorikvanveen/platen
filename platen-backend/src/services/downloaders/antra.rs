@@ -25,11 +25,14 @@ const REAUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(30);
 const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_CONSECUTIVE_STATUS_FAILURES: u32 = 3;
 const DOWNLOAD_PROGRESS_PERCENT_INTERVAL: u64 = 5;
+const DOWNLOAD_PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(30);
+const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct DownloadProgress {
     total_bytes: Option<u64>,
     downloaded_bytes: u64,
     last_reported_percentage: u64,
+    last_reported_at: Instant,
 }
 
 impl DownloadProgress {
@@ -38,22 +41,23 @@ impl DownloadProgress {
             total_bytes: total_bytes.filter(|total| *total > 0),
             downloaded_bytes: 0,
             last_reported_percentage: 0,
+            last_reported_at: Instant::now(),
         }
     }
 
     fn advance(&mut self, chunk_size: usize) -> bool {
         self.downloaded_bytes = self.downloaded_bytes.saturating_add(chunk_size as u64);
 
-        let Some(total_bytes) = self.total_bytes else {
-            return false;
-        };
-        let percentage = self.percentage().unwrap_or_default();
-        if percentage < self.last_reported_percentage + DOWNLOAD_PROGRESS_PERCENT_INTERVAL
-            && self.downloaded_bytes < total_bytes
-        {
+        let percentage = self.percentage();
+        let report_percentage = percentage.is_some_and(|percentage| {
+            percentage >= self.last_reported_percentage + DOWNLOAD_PROGRESS_PERCENT_INTERVAL
+                || percentage == 100
+        });
+        if !report_percentage && self.last_reported_at.elapsed() < DOWNLOAD_PROGRESS_LOG_INTERVAL {
             return false;
         }
-        self.last_reported_percentage = percentage;
+        self.last_reported_percentage = percentage.unwrap_or_default();
+        self.last_reported_at = Instant::now();
 
         true
     }
@@ -210,7 +214,7 @@ impl Antra {
     }
 
     async fn job_download(&self, job_id: &str) -> Result<PathBuf, AntraError> {
-        let mut resp = self
+        let resp = self
             .client
             .get(format!("{BASE_URL}/jobs/{job_id}/download"))
             .send()
@@ -244,8 +248,18 @@ impl Antra {
         let tmp = std::env::temp_dir();
         fs::create_dir_all(&tmp).await?;
         let download_path = tmp.join(&filename);
-        let mut file = File::create(&download_path).await?;
-        let mut progress = DownloadProgress::new(resp.content_length());
+        Self::save_download(resp, job_id, &filename, &download_path).await?;
+        Ok(download_path)
+    }
+
+    async fn save_download(
+        mut response: reqwest::Response,
+        job_id: &str,
+        filename: &str,
+        download_path: &Path,
+    ) -> Result<(), AntraError> {
+        let mut file = File::create(download_path).await?;
+        let mut progress = DownloadProgress::new(response.content_length());
 
         tracing::info!(
             job_id,
@@ -253,24 +267,50 @@ impl Antra {
             total_bytes = progress.total_bytes,
             "Starting Antra download"
         );
-        loop {
-            let chunk = match resp.chunk().await? {
-                Some(c) => c,
-                None => break,
-            };
+        let download_result: Result<(), AntraError> = async {
+            loop {
+                let chunk = match timeout(DOWNLOAD_IDLE_TIMEOUT, response.chunk())
+                    .await
+                    .map_err(|_| AntraError::DownloadStalled {
+                        downloaded_bytes: progress.downloaded_bytes,
+                    })?? {
+                    Some(chunk) => chunk,
+                    None => break,
+                };
 
-            file.write_all(&chunk).await?;
-            if progress.advance(chunk.len()) {
-                tracing::info!(
-                    job_id,
-                    filename,
-                    downloaded_bytes = progress.downloaded_bytes,
-                    total_bytes = progress.total_bytes,
-                    percentage = progress.percentage(),
-                    "Antra download progress"
-                );
+                file.write_all(&chunk).await?;
+                if progress.advance(chunk.len()) {
+                    tracing::info!(
+                        job_id,
+                        filename,
+                        downloaded_bytes = progress.downloaded_bytes,
+                        total_bytes = progress.total_bytes,
+                        percentage = progress.percentage(),
+                        "Antra download progress"
+                    );
+                }
             }
+            file.flush().await?;
+            Ok(())
         }
+        .await;
+        drop(file);
+
+        if let Err(error) = download_result {
+            tracing::error!(
+                job_id,
+                filename,
+                downloaded_bytes = progress.downloaded_bytes,
+                total_bytes = progress.total_bytes,
+                %error,
+                "Antra download failed"
+            );
+            if let Err(cleanup_error) = fs::remove_file(download_path).await {
+                tracing::warn!(job_id, %cleanup_error, "Could not remove partial Antra download");
+            }
+            return Err(error);
+        }
+
         tracing::info!(
             job_id,
             filename,
@@ -278,7 +318,7 @@ impl Antra {
             total_bytes = progress.total_bytes,
             "Antra download finished"
         );
-        Ok(download_path)
+        Ok(())
     }
 
     async fn move_single_to_destination(
@@ -465,6 +505,11 @@ pub enum AntraError {
 
     #[error("Failed to download job")]
     DownloadFailed,
+
+    #[error(
+        "Antra download received no data for 60 seconds after downloading {downloaded_bytes} bytes"
+    )]
+    DownloadStalled { downloaded_bytes: u64 },
 
     #[error("Antra returned a file type that does not match the album type")]
     UnexpectedDownloadType,
