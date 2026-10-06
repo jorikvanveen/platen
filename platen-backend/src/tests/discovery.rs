@@ -8,12 +8,14 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(db: DatabaseConnection) -> Self {
+    async fn new(db: DatabaseConnection) -> Self {
         let (queue, worker) = DownloadQueue::start(
             db.clone(),
             MusicDirectory::new(temp_music_dir()),
             GateDownloader::new(),
-        );
+        )
+        .await
+        .unwrap();
         Self {
             state: app_state(db, queue),
             worker,
@@ -99,7 +101,7 @@ fn album_ids(body: &Value) -> Vec<&str> {
 
 #[tokio::test]
 async fn discovery_normalizes_titles_without_changing_types_metadata_or_group_order() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     let mut winner = candidate("100", "\t SAME  \n title\u{00a0}", "ALBUM");
     winner.album.cover_url = Some("https://example.test/cover.jpg".to_owned());
     // A shared release date keeps the newest-first sort out of the group order
@@ -144,7 +146,7 @@ async fn discovery_normalizes_titles_without_changing_types_metadata_or_group_or
 
 #[tokio::test]
 async fn discovery_orders_albums_newest_first_instead_of_by_tidal_order() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     // The larger id sits earlier in Tidal's order, so a stable undated tail is
     // distinguishable from sorting the tail by id.
     let mut undated_early_position = candidate("90", "Undated sessions", "ALBUM");
@@ -171,7 +173,7 @@ async fn discovery_orders_albums_newest_first_instead_of_by_tidal_order() {
 
 #[tokio::test]
 async fn discovery_places_a_group_at_the_release_date_of_the_edition_it_shows() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     let result = fixture
         .discover(
             vec![
@@ -197,7 +199,7 @@ async fn discovery_excludes_only_matching_title_and_type_for_any_credited_artist
         ("SINGLE", ["100", "102", "103", "104"]),
         ("EP", ["100", "101", "103", "104"]),
     ] {
-        let fixture = Fixture::new(test_database().await);
+        let fixture = Fixture::new(test_database().await).await;
         fixture
             .add(candidate("1", " \tSAME\u{00a0} \n title ", catalog_type))
             .await;
@@ -230,7 +232,7 @@ async fn discovery_excludes_only_matching_title_and_type_for_any_credited_artist
 
 #[tokio::test]
 async fn discovery_rechecks_catalog_membership_after_addition_and_deletion() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     let candidates = vec![
         candidate("100", "same title", "ALBUM"),
         candidate("101", "same title", "SINGLE"),
@@ -267,7 +269,7 @@ async fn discovery_rechecks_catalog_membership_after_addition_and_deletion() {
 
 #[tokio::test]
 async fn discovery_does_not_guess_a_missing_catalog_release_type() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     fixture.add(candidate("1", "Same title", "ALBUM")).await;
     album::ActiveModel {
         id: Set("1".to_owned()),
@@ -311,7 +313,7 @@ async fn assert_winner(fixture: &Fixture, lower_ranked: ScanAlbum, higher_ranked
 
 #[tokio::test]
 async fn discovery_ranks_explicitness_before_quality_before_numeric_id() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     let explicitness_by_preference = [Some(false), None, Some(true)];
     let media_tags_by_quality: &[&[&str]] = &[
         &[],
@@ -378,7 +380,7 @@ async fn discovery_ranks_explicitness_before_quality_before_numeric_id() {
 
 #[tokio::test]
 async fn discovery_returns_empty_results_when_all_title_and_type_groups_are_owned() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     fixture.add(candidate("1", "Same title", "ALBUM")).await;
     let result = fixture
         .discover(
@@ -395,7 +397,13 @@ async fn discovery_returns_empty_results_when_all_title_and_type_groups_are_owne
 
 #[tokio::test]
 async fn discovery_catalog_errors_fail_instead_of_showing_unchecked_results() {
-    let fixture = Fixture::new(Database::connect("sqlite::memory:").await.unwrap());
+    let fixture = Fixture::new(test_database().await).await;
+    fixture
+        .state
+        .db
+        .execute_unprepared("DROP TABLE album")
+        .await
+        .unwrap();
     let (status, _) = request(
         fixture.app(vec![candidate("100", "Same title", "ALBUM")]),
         "GET",
@@ -408,7 +416,7 @@ async fn discovery_catalog_errors_fail_instead_of_showing_unchecked_results() {
 
 #[tokio::test]
 async fn discovery_rejects_invalid_numeric_ids_without_returning_partial_results() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     for invalid_id in ["not-numeric", "18446744073709551616"] {
         let (status, _) = request(
             fixture.app(vec![
@@ -426,7 +434,7 @@ async fn discovery_rejects_invalid_numeric_ids_without_returning_partial_results
 
 #[tokio::test]
 async fn discovery_propagates_discography_errors() {
-    let fixture = Fixture::new(test_database().await);
+    let fixture = Fixture::new(test_database().await).await;
     let mut failed_record = candidate("100", "Same title", "ALBUM");
     failed_record.failure = Some("discography");
     let (status, _) = request(

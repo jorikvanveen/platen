@@ -24,6 +24,7 @@
 	const statusLabels = {
 		queued: 'Queued',
 		running: 'Downloading',
+		retrying: 'Waiting to retry',
 		succeeded: 'Succeeded',
 		failed: 'Failed',
 		cancelled: 'Cancelled'
@@ -73,7 +74,7 @@
 											{/if}
 											{statusLabels[job.status]}
 										</Badge>
-										{#if job.status === 'queued' && oncancel}
+										{#if (job.status === 'queued' || job.status === 'retrying') && oncancel}
 											<Button
 												variant="outline"
 												size="sm"
@@ -85,6 +86,14 @@
 											</Button>
 										{/if}
 									</div>
+									{#if job.retry_counter > 0}
+										<p class="retry-details">Failed attempts: {job.retry_counter}</p>
+									{/if}
+									{#if job.next_retry_at}
+										<p class="retry-details">
+											Eligible after <time datetime={job.next_retry_at}>{new Date(job.next_retry_at).toLocaleString()}</time>
+										</p>
+									{/if}
 								</td>
 								{#if showFailureReason}
 									<td class="failure">
@@ -166,6 +175,12 @@
 
 	.failure {
 		color: var(--destructive);
+	}
+
+	.retry-details {
+		margin-top: 0.5rem;
+		color: var(--muted-foreground);
+		font-size: 0.75rem;
 	}
 
 	.mobile-label {

@@ -18,7 +18,9 @@ impl Fixture {
         let directory = MusicDirectory::new(root.path().to_owned());
         let downloader = GateDownloader::new();
         let (queue, worker) =
-            DownloadQueue::start(db.clone(), directory.clone(), downloader.clone());
+            DownloadQueue::start(db.clone(), directory.clone(), downloader.clone())
+                .await
+                .unwrap();
         let state = AppState {
             tidal: source.clone(),
             queue,

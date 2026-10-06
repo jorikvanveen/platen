@@ -25,7 +25,9 @@ impl Fixture {
         let directory = MusicDirectory::new(configured_root);
         let downloader = GateDownloader::new();
         let (queue, worker) =
-            DownloadQueue::start(db.clone(), directory.clone(), downloader.clone());
+            DownloadQueue::start(db.clone(), directory.clone(), downloader.clone())
+                .await
+                .unwrap();
         let state = AppState {
             tidal: Arc::new(EmptyTidalCatalog),
             queue,
@@ -413,7 +415,7 @@ async fn unknown_album_and_invalid_json_return_plain_text_errors() {
 }
 
 #[tokio::test]
-async fn running_selected_download_does_not_reject_deletion() {
+async fn running_selected_download_rejects_deletion() {
     let fixture = Fixture::new().await;
     fixture
         .state
@@ -422,15 +424,15 @@ async fn running_selected_download_does_not_reject_deletion() {
         .await
         .unwrap();
     fixture.downloader.started.notified().await;
-    assert_eq!(fixture.delete("{}").await.0, StatusCode::OK);
-    assert!(!fixture.exists().await);
+    assert_eq!(fixture.delete("{}").await.0, StatusCode::CONFLICT);
+    assert!(fixture.exists().await);
     let (active, _) = fixture.state.queue.snapshot().await;
     assert!(active.iter().any(|job| job.album_id == "selected"
         && job.status == crate::services::download_queue::JobStatus::Running));
 }
 
 #[tokio::test]
-async fn queued_selected_download_is_not_cancelled_by_deletion() {
+async fn queued_selected_download_is_cancelled_by_deletion() {
     let fixture = Fixture::new().await;
     album::ActiveModel {
         id: Set("selected".to_owned()),
@@ -458,39 +460,42 @@ async fn queued_selected_download_is_not_cancelled_by_deletion() {
     assert_eq!(fixture.delete("{}").await.0, StatusCode::OK);
     assert!(!fixture.exists().await);
     let (active, history) = fixture.state.queue.snapshot().await;
-    assert!(active.iter().any(|job| job.album_id == "selected"
-        && job.status == crate::services::download_queue::JobStatus::Queued));
+    assert!(!active.iter().any(|job| job.album_id == "selected"));
     assert!(active.iter().any(|job| job.album_id == "other"
         && job.status == crate::services::download_queue::JobStatus::Running));
-    assert!(!history.iter().any(|job| job.album_id == "selected"));
+    assert!(history.iter().any(|job| job.album_id == "selected"
+        && job.status == crate::services::download_queue::JobStatus::Cancelled));
+    assert!(
+        crate::entity::download_job::Entity::find()
+            .filter(crate::entity::download_job::Column::AlbumId.eq("selected"))
+            .one(&fixture.db)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(*fixture.downloader.album_starts.lock().unwrap(), ["other"]);
 
     let (status, body) = fixture.request("GET", "/downloads", "").await;
     assert_eq!(status, StatusCode::OK);
-    let selected = body["active"]
+    let selected = body["history"]
         .as_array()
         .unwrap()
         .iter()
         .find(|job| job["album_id"] == "selected")
         .unwrap();
-    assert_eq!(selected["status"], "queued");
+    assert_eq!(selected["status"], "cancelled");
     assert_eq!(selected["artists"], json!([]));
     for field in ["release_name", "explicit", "available_quality"] {
         assert_eq!(selected.get(field), Some(&Value::Null));
     }
-    let (status, cancelled) = fixture
-        .request(
-            "DELETE",
-            &format!("/downloads/{}", selected["id"].as_str().unwrap()),
-            "",
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(cancelled["status"], "cancelled");
-    assert_eq!(cancelled["artists"], json!([]));
-    for field in ["release_name", "explicit", "available_quality"] {
-        assert_eq!(cancelled.get(field), Some(&Value::Null));
-    }
+    let response = send_request(
+        router(fixture.state.clone()),
+        "DELETE",
+        &format!("/downloads/{}", selected["id"].as_str().unwrap()),
+        "",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

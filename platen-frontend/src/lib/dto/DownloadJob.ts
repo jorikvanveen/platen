@@ -2,4 +2,4 @@
 import type { Artist } from "./Artist";
 import type { DownloadJobStatus } from "./DownloadJobStatus";
 
-export type DownloadJob = { id: string, album_id: string, release_name: string | null, artists: Array<Artist>, explicit: boolean | null, available_quality: string | null, status: DownloadJobStatus, enqueued_at: string, started_at: string | null, finished_at: string | null, failure_reason: string | null, };
+export type DownloadJob = { id: string, album_id: string, release_name: string | null, artists: Array<Artist>, explicit: boolean | null, available_quality: string | null, status: DownloadJobStatus, enqueued_at: string, started_at: string | null, finished_at: string | null, failure_reason: string | null, retry_counter: number, next_retry_at: string | null, retry_expires_at: string | null, };

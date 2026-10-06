@@ -127,7 +127,7 @@
 			<AlertDialog.Description>
 				This removes the album from the catalog for all credited artists.
 				{#if downloadActive}
-					Its queued or running download will not be cancelled.
+					Its queued or delayed download will be cancelled. Albums cannot be deleted during an active download.
 				{/if}
 			</AlertDialog.Description>
 		</AlertDialog.Header>

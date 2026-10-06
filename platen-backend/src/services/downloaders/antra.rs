@@ -133,10 +133,7 @@ impl Antra {
         loop {
             interval.tick().await;
             let reauthentication = async {
-                while !queue.is_empty().await {
-                    sleep(Duration::from_secs(1)).await;
-                }
-
+                let _download_guard = queue.pause_downloads().await;
                 tracing::info!("Reauthenticating with Antra");
                 match timeout(REAUTHENTICATION_TIMEOUT, self.login()).await {
                     Ok(Ok(())) => {}

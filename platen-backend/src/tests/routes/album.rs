@@ -253,7 +253,7 @@ async fn leftover_staging_directories_do_not_block_downloads() {
 }
 
 #[tokio::test]
-async fn downloaded_album_conflicts_without_starting_another_download() {
+async fn downloaded_album_fulfills_job_without_starting_another_download() {
     let db = test_database().await;
     insert_test_album(&db, Some("Test artist/Test album (2026)")).await;
     let music = tempfile::tempdir().unwrap();
@@ -261,8 +261,9 @@ async fn downloaded_album_conflicts_without_starting_another_download() {
 
     assert_eq!(
         download_with(&db, music.path().to_str().unwrap(), &downloader, "album-1").await,
-        Err(DownloadError::AlreadyDownloaded)
+        Ok(())
     );
+    assert!(!music.path().join("Test artist").exists());
 }
 
 #[tokio::test]

@@ -6,3 +6,4 @@ pub mod album;
 pub mod album_artist;
 pub mod artist;
 pub mod artist_known_album;
+pub mod download_job;

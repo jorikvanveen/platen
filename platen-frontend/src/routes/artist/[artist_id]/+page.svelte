@@ -44,7 +44,7 @@
 	$effect(() => {
 		const trackedJobs = downloadJobs;
 		const pendingJobs = trackedJobs.filter(
-			(job) => job.status === 'queued' || job.status === 'running'
+			(job) => job.status === 'queued' || job.status === 'running' || job.status === 'retrying'
 		);
 		if (pendingJobs.length === 0) {
 			downloadStatusError = '';

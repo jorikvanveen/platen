@@ -452,14 +452,16 @@ async fn create_scan_audio(music_root: &Path, paths: &[&str]) {
     }
 }
 
-fn scan_app(
+async fn scan_app(
     db: &DatabaseConnection,
     music_root: &Path,
     source: Arc<FakeTidalCatalog>,
 ) -> (Router, tokio::task::JoinHandle<()>) {
     let music_directory = MusicDirectory::new(music_root.to_owned());
     let (queue, worker_handle) =
-        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
+        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new())
+            .await
+            .unwrap();
     let app = router(AppState {
         tidal: source.clone(),
         queue,
@@ -518,7 +520,9 @@ async fn catalog_artwork_refresh_route_is_available_via_post() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader,
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue));
 
     let response = app
@@ -578,7 +582,7 @@ async fn issue37_scan_returns_immediately_and_reports_matching_progress_and_conf
         search_gate: Some(Semaphore::new(0)),
         ..Default::default()
     });
-    let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+    let (app, worker_handle) = scan_app(&db, music.path(), source.clone()).await;
     assert_eq!(scan_status(&app).await, serde_json::Value::Null);
 
     let response = tokio::time::timeout(
@@ -688,7 +692,7 @@ async fn catalog_metadata_survives_creation_reads_and_repeated_adds_and_scans() 
                     albums: vec![record.clone()],
                     ..Default::default()
                 });
-                let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+                let (app, worker_handle) = scan_app(&db, music.path(), source.clone()).await;
 
                 if scan_created {
                     create_scan_audio(music.path(), &["Primary Artist/Title (2024)"]).await;
@@ -821,7 +825,7 @@ async fn issue37_scan_imports_unique_albums_and_preserves_known_metadata_on_resc
         ],
         ..Default::default()
     });
-    let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+    let (app, worker_handle) = scan_app(&db, music.path(), source.clone()).await;
     let completed = run_scan(&app).await;
     assert_eq!(completed["phase"], "completed");
     assert_eq!(completed["failure_reason"], serde_json::Value::Null);
@@ -972,7 +976,7 @@ async fn issue37_scan_skips_ambiguity_duplicates_and_failures_without_losing_oth
         failed_searches: vec!["Primary Artist Search failure".to_owned()],
         ..Default::default()
     });
-    let (app, worker_handle) = scan_app(&db, music.path(), source.clone());
+    let (app, worker_handle) = scan_app(&db, music.path(), source.clone()).await;
     let completed = run_scan(&app).await;
     assert_eq!(completed["phase"], "completed");
     assert_eq!(completed["failure_reason"], serde_json::Value::Null);
@@ -1072,7 +1076,9 @@ async fn catalog_scan_runs_in_the_background_and_retains_its_summary() {
     let music_directory = MusicDirectory::new(music.path().to_owned());
     let guard = music_directory.lock().await;
     let (queue, worker_handle) =
-        DownloadQueue::start(db.clone(), music_directory.clone(), downloader);
+        DownloadQueue::start(db.clone(), music_directory.clone(), downloader)
+            .await
+            .unwrap();
     let app = router(AppState {
         tidal: Arc::new(EmptyTidalCatalog),
         queue,
@@ -1207,7 +1213,9 @@ async fn catalog_scan_reconciles_locations_without_changing_metadata_and_is_idem
     let before = catalog_rows(&db).await;
     let music_directory = MusicDirectory::new(music.path().to_owned());
     let (queue, worker_handle) =
-        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
+        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new())
+            .await
+            .unwrap();
     let app = router(AppState {
         tidal: Arc::new(EmptyTidalCatalog),
         queue,
@@ -1287,7 +1295,9 @@ async fn catalog_scan_clears_paths_when_the_music_root_is_missing_even_with_fail
     let music = tempfile::tempdir().unwrap();
     let music_directory = MusicDirectory::new(music.path().join("missing-root"));
     let (queue, worker_handle) =
-        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
+        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new())
+            .await
+            .unwrap();
     let app = router(AppState {
         tidal: Arc::new(EmptyTidalCatalog),
         queue,
@@ -1322,7 +1332,9 @@ async fn enqueue_rejects_when_worker_stopped_without_retaining_job() {
     insert_test_album(&db, "album-1").await;
     let downloader = GateDownloader::new();
     let (queue, worker_handle) =
-        DownloadQueue::start(db, MusicDirectory::new(temp_music_dir()), downloader);
+        DownloadQueue::start(db, MusicDirectory::new(temp_music_dir()), downloader)
+            .await
+            .unwrap();
     worker_handle.abort();
     let _ = worker_handle.await;
 
@@ -1342,7 +1354,9 @@ async fn download_route_accepts_before_worker_finishes() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader.clone(),
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue));
 
     let response = app
@@ -1467,7 +1481,9 @@ async fn download_responses_resolve_current_catalog_metadata() {
             db.clone(),
             MusicDirectory::new(temp_music_dir()),
             downloader.clone(),
-        );
+        )
+        .await
+        .unwrap();
         let app = router(app_state(db.clone(), queue));
         let assert_metadata = |job: &serde_json::Value| {
             let album_id = job["album_id"].as_str().unwrap();
@@ -1599,7 +1615,9 @@ async fn downloaded_album_conflict_is_returned_before_enqueueing() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader,
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue.clone()));
 
     let response = app
@@ -1627,7 +1645,9 @@ async fn unknown_album_is_rejected_before_enqueueing() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader,
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue.clone()));
 
     let response = app
@@ -1658,7 +1678,9 @@ async fn duplicate_active_submission_returns_existing_job_without_reordering() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader.clone(),
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue));
 
     enqueue(&app, "album-1").await;
@@ -1682,7 +1704,7 @@ async fn duplicate_active_submission_returns_existing_job_without_reordering() {
 }
 
 #[tokio::test]
-async fn queue_accepts_one_thousand_waiting_jobs_and_rejects_the_next() {
+async fn queue_accepts_one_thousand_unfinished_jobs_and_rejects_the_next() {
     let db = test_database().await;
     for album_id in ["album-running", "album-queued-0", "album-over-limit"] {
         insert_test_album(&db, album_id).await;
@@ -1692,7 +1714,9 @@ async fn queue_accepts_one_thousand_waiting_jobs_and_rejects_the_next() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader.clone(),
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue.clone()));
 
     enqueue(&app, "album-running").await;
@@ -1700,7 +1724,7 @@ async fn queue_accepts_one_thousand_waiting_jobs_and_rejects_the_next() {
         .await
         .unwrap();
     let first_queued = enqueue(&app, "album-queued-0").await;
-    for index in 1..1_000 {
+    for index in 1..999 {
         queue
             .enqueue(format!("album-queued-{index}"))
             .await
@@ -1721,7 +1745,7 @@ async fn queue_accepts_one_thousand_waiting_jobs_and_rejects_the_next() {
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(queue.snapshot().await.0.len(), 1_001);
+    assert_eq!(queue.snapshot().await.0.len(), 1_000);
     assert!(
         !queue
             .snapshot()
@@ -1745,7 +1769,9 @@ async fn one_worker_does_not_run_downloads_concurrently() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader.clone(),
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue));
 
     for album_id in ["album-1", "album-2"] {
@@ -1803,20 +1829,23 @@ async fn failed_download_is_safe_and_does_not_stall_later_work() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader,
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue));
 
     enqueue(&app, "album-1").await;
     enqueue(&app, "album-2").await;
-    let body = wait_for_history(&app, 2).await;
+    let body = wait_for_history(&app, 1).await;
 
-    assert!(body["active"].as_array().unwrap().is_empty());
     assert_eq!(body["history"][0]["album_id"], "album-2");
     assert_eq!(body["history"][0]["status"], "succeeded");
-    assert_eq!(body["history"][1]["album_id"], "album-1");
-    assert_eq!(body["history"][1]["status"], "failed");
+    assert_eq!(body["active"][0]["album_id"], "album-1");
+    assert_eq!(body["active"][0]["status"], "retrying");
+    assert_eq!(body["active"][0]["retry_counter"], 1);
+    assert!(body["active"][0]["next_retry_at"].is_string());
     assert_eq!(
-        body["history"][1]["failure_reason"],
+        body["active"][0]["failure_reason"],
         "Album download failed."
     );
     assert!(!body.to_string().contains("credential=secret"));
@@ -1828,10 +1857,13 @@ async fn failed_download_is_safe_and_does_not_stall_later_work() {
         chrono::DateTime::parse_from_rfc3339(job["finished_at"].as_str().unwrap()).unwrap();
     }
 
-    enqueue(&app, "album-1").await;
-    let body = wait_for_history(&app, 3).await;
-    assert_eq!(body["history"][0]["album_id"], "album-1");
-    assert_eq!(body["history"][0]["status"], "succeeded");
+    let duplicate = enqueue(&app, "album-1").await;
+    assert_eq!(duplicate["id"], body["active"][0]["id"]);
+    assert_eq!(duplicate["retry_counter"], 1);
+    assert_eq!(
+        duplicate["next_retry_at"],
+        body["active"][0]["next_retry_at"]
+    );
 
     worker_handle.abort();
     let _ = worker_handle.await;
@@ -1847,7 +1879,9 @@ async fn delete_cancels_queued_job_and_rejects_running_or_unknown_jobs() {
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader.clone(),
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue));
 
     let running = enqueue(&app, "album-1").await;
@@ -1933,7 +1967,9 @@ async fn download_history_retains_latest_hundred_without_evicting_active_work() 
         db.clone(),
         MusicDirectory::new(temp_music_dir()),
         downloader.clone(),
-    );
+    )
+    .await
+    .unwrap();
     let app = router(app_state(db, queue));
 
     for index in 0..=100 {

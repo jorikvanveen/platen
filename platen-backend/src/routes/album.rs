@@ -302,7 +302,8 @@ pub async fn download(
         })?;
     let job = queue.enqueue(album_id).await.map_err(|error| match error {
         services::download_queue::QueueError::Full => StatusCode::TOO_MANY_REQUESTS,
-        services::download_queue::QueueError::WorkerStopped => {
+        services::download_queue::QueueError::WorkerStopped
+        | services::download_queue::QueueError::Storage(_) => {
             error!("Could not enqueue download job: {error:#?}");
             StatusCode::SERVICE_UNAVAILABLE
         }
@@ -318,8 +319,6 @@ pub async fn download(
 pub(crate) enum DownloadError {
     #[error("could not load album metadata")]
     Catalog,
-    #[error("album is already downloaded")]
-    AlreadyDownloaded,
     #[error("album destination already exists")]
     DestinationExists,
     #[error("album transfer failed")]
@@ -332,7 +331,6 @@ impl DownloadError {
     pub(crate) fn client_message(&self) -> &'static str {
         match self {
             Self::Catalog => "Could not load album metadata.",
-            Self::AlreadyDownloaded => "Album is already downloaded.",
             Self::DestinationExists => "Album destination already exists.",
             Self::Transfer => "Album download failed.",
             Self::Save => "Could not save the completed download.",
@@ -359,7 +357,7 @@ pub(crate) async fn download_with(
         })?;
 
     if album.relative_path.is_some() {
-        return Err(DownloadError::AlreadyDownloaded);
+        return Ok(());
     }
 
     let (_, primary) = album_artist::Entity::find()
@@ -497,6 +495,18 @@ pub(crate) async fn delete(
     Path(album_id): Path<String>,
     Json(request): Json<dto::AlbumDeletionRequest>,
 ) -> Result<Json<dto::AlbumDeletionResult>, DeletionApiError> {
+    let queue_deletion = state.queue.prepare_album_deletion(&album_id).await.map_err(|error| {
+        match error {
+            services::download_queue::CancelError::Running => (
+                StatusCode::CONFLICT,
+                "Cannot delete an album while it is downloading. Try again after the attempt finishes.".to_owned(),
+            ),
+            _ => {
+                tracing::error!(%error, "Could not coordinate album deletion with downloads");
+                (StatusCode::SERVICE_UNAVAILABLE, "Could not prepare album deletion.".to_owned())
+            }
+        }
+    })?;
     let transaction = state
         .db
         .begin()
@@ -507,6 +517,10 @@ pub(crate) async fn delete(
         .await
         .map_err(|error| deletion_database_error(error, false))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "Album not found.".to_owned()))?;
+    queue_deletion
+        .persist(&transaction)
+        .await
+        .map_err(|error| deletion_database_error(error, false))?;
     let files_removed = if request.delete_files {
         let relative_path = album.relative_path.ok_or_else(|| {
                 (StatusCode::UNPROCESSABLE_ENTITY, "Cannot delete files without a recorded album location. The catalog was not changed.".to_owned())
@@ -569,5 +583,6 @@ pub(crate) async fn delete(
         .commit()
         .await
         .map_err(|error| deletion_database_error(error, files_removed))?;
+    queue_deletion.commit();
     Ok(Json(dto::AlbumDeletionResult { removed_artist_ids }))
 }

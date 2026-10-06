@@ -99,14 +99,16 @@ fn observation(source: &FakeTidalCatalog, id: &str, albums: Vec<TidalAlbum>) {
         .insert(id.to_owned(), Ok(albums));
 }
 
-fn monitoring_app(
+async fn monitoring_app(
     db: &DatabaseConnection,
     music_root: &Path,
     source: Arc<FakeTidalCatalog>,
 ) -> (Router, DownloadQueue, tokio::task::JoinHandle<()>) {
     let music_directory = MusicDirectory::new(music_root.to_owned());
     let (queue, worker) =
-        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new());
+        DownloadQueue::start(db.clone(), music_directory.clone(), GateDownloader::new())
+            .await
+            .unwrap();
     let app = router(AppState {
         tidal: source.clone(),
         queue: queue.clone(),
@@ -195,7 +197,7 @@ async fn issue55_six_hour_checks_remember_disabled_observations_without_catch_up
         ],
         ..Default::default()
     });
-    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
     seed_empty(
         &db,
         &source,
@@ -263,7 +265,7 @@ async fn issue55_history_accumulates_and_known_pairs_do_not_upgrade_or_reappear_
         albums: vec![original, upgrade, single, clean, explicit],
         ..Default::default()
     });
-    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
     seed_empty(&db, &source, &queue, &[("z-primary", false)]).await;
     observation(&source, "z-primary", vec![source.albums[0].album.clone()]);
     check(&db, &source, &queue, 6).await;
@@ -335,7 +337,7 @@ async fn issue55_collaborators_reuse_catalog_editions_downloads_and_active_jobs_
         ],
         ..Default::default()
     });
-    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
     seed_empty(
         &db,
         &source,
@@ -406,7 +408,7 @@ async fn issue55_catalog_failure_and_queue_rejection_are_observed_once_not_retri
         ],
         ..Default::default()
     });
-    let (_app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+    let (_app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
     seed_empty(&db, &source, &queue, &[("z-primary", true)]).await;
     db.execute_unprepared("CREATE TRIGGER fail_monitor_album BEFORE INSERT ON album WHEN NEW.id = '101' BEGIN SELECT RAISE(ABORT, 'test catalog failure'); END").await.unwrap();
     observation(
@@ -432,16 +434,16 @@ async fn issue55_catalog_failure_and_queue_rejection_are_observed_once_not_retri
     assert_eq!(active_album_ids(&queue).await, ["102"]);
     let calls = source.metadata_calls.lock().unwrap().clone();
     let (_app, replacement_queue, replacement_worker) =
-        monitoring_app(&db, music.path(), source.clone());
+        monitoring_app(&db, music.path(), source.clone()).await;
     check(&db, &source, &replacement_queue, 18).await;
-    assert!(replacement_queue.is_empty().await);
+    assert_eq!(active_album_ids(&replacement_queue).await, ["102"]);
     assert_eq!(*source.metadata_calls.lock().unwrap(), calls);
     assert_eq!(catalog_album_ids(&db).await, ["102", "103"]);
     replacement_worker.abort();
 }
 
 #[tokio::test]
-async fn issue55_accepted_failed_cancelled_and_lost_jobs_are_never_resubmitted() {
+async fn issue55_monitoring_does_not_duplicate_recovered_or_retrying_jobs() {
     let db = test_database().await;
     let music = tempfile::tempdir().unwrap();
     let source = Arc::new(FakeTidalCatalog {
@@ -458,49 +460,73 @@ async fn issue55_accepted_failed_cancelled_and_lost_jobs_are_never_resubmitted()
         Arc::new(FailFirstDownloader {
             calls: AtomicUsize::new(0),
         }),
-    );
+    )
+    .await
+    .unwrap();
     seed_empty(&db, &source, &queue, &[("z-primary", true)]).await;
     observation(&source, "z-primary", vec![source.albums[0].album.clone()]);
     check(&db, &source, &queue, 6).await;
     tokio::time::timeout(Duration::from_secs(5), async {
-        while queue.snapshot().await.1.is_empty() {
+        while !queue
+            .snapshot()
+            .await
+            .0
+            .iter()
+            .any(|job| job.retry_counter == 1)
+        {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
     assert_eq!(
-        queue.snapshot().await.1[0].status,
-        crate::services::download_queue::JobStatus::Failed
+        queue.snapshot().await.0[0].status,
+        crate::services::download_queue::JobStatus::Retrying
     );
     check(&db, &source, &queue, 7).await;
-    assert_eq!(queue.snapshot().await.1.len(), 1);
+    let retrying_id = queue.snapshot().await.0[0].id.clone();
+    assert!(queue.snapshot().await.1.is_empty());
     worker.abort();
+    let _ = worker.await;
     let downloader = GateDownloader::new();
     let (queue, worker) = DownloadQueue::start(
         db.clone(),
         MusicDirectory::new(music.path().to_owned()),
         downloader.clone(),
-    );
+    )
+    .await
+    .unwrap();
     check(&db, &source, &queue, 12).await;
     tokio::time::timeout(Duration::from_secs(5), downloader.started.notified())
         .await
         .unwrap();
     let jobs = queue.snapshot().await.0;
-    assert_eq!(jobs.len(), 2);
+    assert_eq!(jobs.len(), 3);
+    assert!(
+        jobs.iter()
+            .any(|job| job.id == retrying_id && job.retry_counter == 1)
+    );
     let queued = jobs
         .iter()
         .find(|job| job.status == crate::services::download_queue::JobStatus::Queued)
         .unwrap();
     queue.cancel(&queued.id).await.unwrap();
     check(&db, &source, &queue, 18).await;
-    assert_eq!(queue.snapshot().await.0.len(), 1);
+    assert_eq!(queue.snapshot().await.0.len(), 2);
     assert_eq!(queue.snapshot().await.1.len(), 1);
     worker.abort();
     assert!(worker.await.unwrap_err().is_cancelled());
-    let (_app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+    let (_app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
     check(&db, &source, &queue, 24).await;
-    assert!(queue.is_empty().await);
+    assert_eq!(queue.snapshot().await.0.len(), 2);
+    assert!(
+        queue
+            .snapshot()
+            .await
+            .0
+            .iter()
+            .any(|job| job.id == retrying_id)
+    );
     assert_eq!(known(&db, "z-primary").await.len(), 3);
     worker.abort();
 }
@@ -516,7 +542,7 @@ async fn issue55_gated_fetch_uses_processing_preference_and_metadata_rechecks_be
             discography_gates_by_artist_id: HashMap::from([("z-primary".into(), gate.clone())]),
             ..Default::default()
         });
-        let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+        let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
         seed_empty(&db, &source, &queue, &[("z-primary", true)]).await;
         // Consume the baseline notification so the next one belongs to the blocked fetch.
         source.discography_started.notified().await;
@@ -560,7 +586,7 @@ async fn issue55_gated_fetch_uses_processing_preference_and_metadata_rechecks_be
         metadata_gate: Some(gate.clone()),
         ..Default::default()
     });
-    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
     seed_empty(&db, &source, &queue, &[("z-primary", true)]).await;
     let attempt = tokio::spawn({
         let db = db.clone();
@@ -594,7 +620,7 @@ async fn issue55_failed_complete_observation_preserves_history_then_due_retry_ha
         ],
         ..Default::default()
     });
-    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, worker) = monitoring_app(&db, music.path(), source.clone()).await;
     seed_empty(&db, &source, &queue, &[("z-primary", false)]).await;
     observation(&source, "z-primary", vec![source.albums[0].album.clone()]);
     check(&db, &source, &queue, 6).await;
@@ -647,7 +673,7 @@ async fn issue55_startup_checks_overdue_once_and_reopen_preserves_schedule_histo
         albums: vec![discovered.clone(), later],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     seed_empty(
         &db,
         &source,
@@ -692,7 +718,7 @@ async fn issue55_startup_checks_overdue_once_and_reopen_preserves_schedule_histo
     db.close().await.unwrap();
 
     let db = Database::connect(&database_url).await.unwrap();
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     assert_eq!(stored_artist(&db, "z-primary").await, saved_artist);
     assert_eq!(known(&db, "z-primary").await, saved_history);
     assert_eq!(known(&db, "a-guest").await, saved_history);
@@ -713,13 +739,14 @@ async fn issue55_startup_checks_overdue_once_and_reopen_preserves_schedule_histo
     .await
     .unwrap();
     assert_eq!(source.discography_calls.lock().unwrap().len(), 2);
-    no_jobs(&app).await;
+    assert_eq!(active_album_ids(&queue).await, ["101"]);
+    assert_eq!(downloads(&app).await["active"].as_array().unwrap().len(), 1);
     monitor::check_due_artists(&db, source.as_ref(), &queue, || {
         last_attempt + TimeDelta::hours(6)
     })
     .await
     .unwrap();
-    assert_eq!(active_album_ids(&queue).await, ["102"]);
+    assert_eq!(active_album_ids(&queue).await, ["101", "102"]);
     assert_eq!(known(&db, "z-primary").await.len(), 2);
     assert_eq!(
         stored_artist(&db, "z-primary")
@@ -754,7 +781,7 @@ async fn issue54_add_and_scan_initialize_disabled_collaborators_without_blocking
         discography_gates_by_artist_id: HashMap::from([("a-guest".to_owned(), gate.clone())]),
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     for id in ["a-guest", "z-primary"] {
         let artist = stored_artist(&db, id).await;
@@ -805,7 +832,7 @@ async fn issue54_scan_introduces_disabled_artists_and_successful_empty_monitorin
         albums: vec![ScanAlbum::new("owned", "Owned", "2024")],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     assert_eq!(run_scan(&app).await["phase"], "completed");
     for id in ["a-guest", "z-primary"] {
         assert!(!stored_artist(&db, id).await.monitored);
@@ -834,7 +861,7 @@ async fn issue54_monitoring_baseline_is_unfiltered_normalized_typed_and_scoped_p
         albums: vec![ScanAlbum::new("owned", "Owned", "2024")],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     let mut single = ScanAlbum::new("single", "Old Record", "2000").album;
     single.r#type = "SINGLE".to_owned();
@@ -883,7 +910,7 @@ async fn issue54_failure_retries_only_when_due_and_first_success_survives_prefer
         albums: vec![ScanAlbum::new("owned", "Owned", "2024")],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     source
         .discography_responses_by_artist_id
@@ -978,7 +1005,7 @@ async fn issue54_interrupted_attempt_retries_when_due_after_database_reopen() {
         )]),
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     let attempt = tokio::spawn({
         let db = db.clone();
@@ -1011,7 +1038,7 @@ async fn issue54_interrupted_attempt_retries_when_due_after_database_reopen() {
         albums: vec![owned],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     assert_eq!(stored_artist(&db, "z-primary").await, interrupted);
     sweep(
         &db,
@@ -1053,7 +1080,7 @@ async fn issue54_tidal_timeout_preserves_retry_timing_and_other_artists_initiali
         albums: vec![ScanAlbum::new("owned", "Owned", "2024")],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     source
         .discography_responses_by_artist_id
@@ -1098,7 +1125,7 @@ async fn issue54_preference_api_is_typed_persistent_and_does_not_create_artists(
         albums: vec![ScanAlbum::new("owned", "Owned", "2024")],
         ..Default::default()
     });
-    let (app, queue_worker) = scan_app(&db, music.path(), source.clone());
+    let (app, queue_worker) = scan_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     let first = preference(&app, "z-primary", true).await;
     assert_eq!(preference(&app, "z-primary", true).await, first);
@@ -1154,7 +1181,7 @@ async fn issue54_album_deletion_removes_only_orphan_artist_history() {
         albums: vec![ScanAlbum::new("owned", "Owned", "2024"), surviving],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     add(&app, "surviving").await;
     sweep(&db, &source, &queue, time()).await;
@@ -1191,7 +1218,7 @@ async fn issue54_monitoring_baseline_rolls_back_entries_and_completion_on_insert
         albums: vec![owned],
         ..Default::default()
     });
-    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone());
+    let (app, queue, queue_worker) = monitoring_app(&db, music.path(), source.clone()).await;
     add(&app, "owned").await;
     observation(
         &source,

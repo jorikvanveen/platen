@@ -73,7 +73,7 @@
 	}
 
 	async function cancel(job: DownloadJob, button: HTMLElement) {
-		if (!mounted || cancellingId !== null || job.status !== 'queued') return;
+		if (!mounted || cancellingId !== null || !['queued', 'retrying'].includes(job.status)) return;
 		cancellingId = job.id;
 		actionMessage = '';
 		clearTimeout(timer);
@@ -172,6 +172,7 @@
 				title="Active downloads"
 				jobs={downloads.active}
 				emptyMessage="No active downloads."
+				showFailureReason
 				{cancellingId}
 				oncancel={(job, button) => void cancel(job, button)}
 			/>

@@ -25,6 +25,7 @@ pub mod dto {
     pub enum DownloadJobStatus {
         Queued,
         Running,
+        Retrying,
         Succeeded,
         Failed,
         Cancelled,
@@ -44,6 +45,9 @@ pub mod dto {
         pub started_at: Option<DateTime<Utc>>,
         pub finished_at: Option<DateTime<Utc>>,
         pub failure_reason: Option<String>,
+        pub retry_counter: u32,
+        pub next_retry_at: Option<DateTime<Utc>>,
+        pub retry_expires_at: Option<DateTime<Utc>>,
     }
 
     #[derive(Debug, Serialize, TS)]
@@ -61,6 +65,7 @@ impl dto::DownloadJob {
         artists: Vec<artist::Model>,
     ) -> Self {
         let media_tags = album.and_then(catalog::parse_media_tags);
+        let retry_expires_at = job.retry_expires_at();
         Self {
             id: job.id,
             album_id: job.album_id,
@@ -73,6 +78,9 @@ impl dto::DownloadJob {
             started_at: job.started_at,
             finished_at: job.finished_at,
             failure_reason: job.failure_reason,
+            retry_counter: job.retry_counter,
+            next_retry_at: job.next_retry_at,
+            retry_expires_at,
         }
     }
 }
@@ -82,6 +90,7 @@ impl From<JobStatus> for dto::DownloadJobStatus {
         match status {
             JobStatus::Queued => Self::Queued,
             JobStatus::Running => Self::Running,
+            JobStatus::Retrying => Self::Retrying,
             JobStatus::Succeeded => Self::Succeeded,
             JobStatus::Failed => Self::Failed,
             JobStatus::Cancelled => Self::Cancelled,
@@ -96,6 +105,10 @@ pub async fn cancel(
     let job = queue.cancel(&job_id).await.map_err(|error| match error {
         CancelError::NotFound => StatusCode::NOT_FOUND,
         CancelError::Running => StatusCode::CONFLICT,
+        CancelError::Storage(error) => {
+            tracing::error!(%error, "Could not persist download cancellation");
+            StatusCode::SERVICE_UNAVAILABLE
+        }
     })?;
     let album = match album::Entity::find_by_id(&job.album_id).one(&db).await {
         Ok(album) => album,

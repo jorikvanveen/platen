@@ -1,6 +1,8 @@
 # In-memory single-worker download queue
 
-Status: accepted
+Status: partially superseded by [ADR 0008](0008-persist-unfinished-download-jobs.md).
+The persistence and restart behavior now follows that decision.
+The single-worker decision remains accepted.
 
 Album downloads run through one in-process queue and one background worker. The
 HTTP handler creates a Download job and returns without waiting for Antra or

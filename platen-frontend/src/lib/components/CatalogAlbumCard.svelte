@@ -26,7 +26,8 @@
 	let requestError = $state('');
 	const downloaded = $derived(album.relative_path !== null);
 	const downloading = $derived(downloadJob?.status === 'running');
-	const queued = $derived(downloadJob?.status === 'queued');
+	const retrying = $derived(downloadJob?.status === 'retrying');
+	const queued = $derived(downloadJob?.status === 'queued' || retrying);
 	const downloadError = $derived(
 		requestError ||
 			(downloadJob?.status === 'failed'
@@ -62,6 +63,8 @@
 				{album.title} is downloaded.
 			{:else if downloading}
 				Downloading {album.title}.
+			{:else if retrying}
+				{album.title} is waiting to retry.
 			{:else if queued}
 				{album.title} is queued for download.
 			{/if}
@@ -82,7 +85,7 @@
 					<LoaderCircle class="motion-safe:animate-spin" aria-hidden="true" />
 					{submitting ? 'Queuing...' : 'Downloading...'}
 				{:else if queued}
-					<Clock3 aria-hidden="true" />Queued
+					<Clock3 aria-hidden="true" />{retrying ? 'Waiting to retry' : 'Queued'}
 				{:else if downloadError}
 					<RotateCcw aria-hidden="true" />Retry download
 				{:else}
@@ -92,7 +95,7 @@
 			</Button>
 			<DeleteAlbumDialog
 				{album}
-				disabled={submitting}
+				disabled={submitting || downloading}
 				downloadActive={queued || downloading}
 				{ondelete}
 			/>

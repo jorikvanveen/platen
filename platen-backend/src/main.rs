@@ -55,7 +55,7 @@ async fn main() -> color_eyre::Result<()> {
     let listener = TcpListener::bind(&config.bind_address).await?;
     let music_directory = MusicDirectory::new(PathBuf::from(&config.music_dir));
     let (queue, worker_handle) =
-        DownloadQueue::start(db.clone(), music_directory.clone(), antra.clone());
+        DownloadQueue::start(db.clone(), music_directory.clone(), antra.clone()).await?;
     let reauthentication_queue = queue.clone();
     let reauthentication_handle = tokio::spawn(async move {
         antra

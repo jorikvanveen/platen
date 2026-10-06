@@ -128,11 +128,22 @@ _Avoid_: filesystem import, filesystem watcher, reconciliation
 
 **Download job**:
 A request by a user or Artist monitoring to fetch one Album through Antra and
-place its audio in the Music directory. A job is queued, running, succeeded,
-failed, or cancelled; only a queued job may be cancelled, and only one unfinished
-job may exist per Album.
+place its audio in the Music directory, fulfilled through one or more Download
+attempts. Only one unfinished job may exist per Album, and only a job waiting
+to start or retry may be cancelled.
 _Avoid_: queue item, Antra job, download request
 
+**Download attempt**:
+One try to fetch an Album through Antra and place its audio in the Music directory.
+A failed attempt increases the job's retry count without finishing the job unless
+its retry limit has been reached.
+_Avoid_: Antra job
+
+**Failed Download job**:
+A Download job that ended unsuccessfully after its retry window expired. A failed
+Download attempt does not put the job in history while retries remain.
+
 **Download queue**:
-The set of queued and running Download jobs. Succeeded, failed, and cancelled
-jobs are history and do not prevent the Download queue from being empty.
+The unfinished Download jobs, including jobs waiting to start, running, or waiting
+for a retry. Succeeded, failed, and cancelled jobs are history and do not prevent
+the Download queue from being empty.
