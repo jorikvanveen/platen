@@ -1,5 +1,11 @@
 use super::*;
-use std::process::Command as SyncCommand;
+use std::{
+    process::Command as SyncCommand,
+    sync::{Arc, Mutex},
+};
+
+use axum::{Router, body::Body, routing::get};
+use tokio::{net::TcpListener, sync::mpsc, task::JoinHandle};
 
 #[test]
 fn album_job_requests_reject_empty_albums() {
@@ -7,6 +13,181 @@ fn album_job_requests_reject_empty_albums() {
         CreateJobRequestBody::for_album("https://tidal.com/browse/album/123", 0),
         Err(AntraError::EmptyAlbum)
     ));
+}
+
+#[test]
+fn download_progress_reports_five_percent_increments() {
+    let mut progress = DownloadProgress::new(Some(100));
+    assert!(!progress.advance(4));
+    assert!(progress.advance(1));
+    assert!(!progress.advance(4));
+    assert!(progress.advance(1));
+    assert!(progress.advance(90));
+    assert_eq!(progress.downloaded_bytes, 100);
+    assert_eq!(progress.percentage(), Some(100));
+}
+
+#[tokio::test(start_paused = true)]
+async fn download_progress_reports_bytes_without_a_content_length() {
+    for total_bytes in [None, Some(0)] {
+        let mut progress = DownloadProgress::new(total_bytes);
+        assert!(!progress.advance(1024));
+        tokio::time::advance(DOWNLOAD_PROGRESS_LOG_INTERVAL).await;
+        assert!(progress.advance(1024));
+        assert_eq!(progress.downloaded_bytes, 2048);
+        assert_eq!(progress.percentage(), None);
+        assert!(!progress.advance(1024));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn download_progress_reports_slow_transfers_before_five_percent() {
+    let mut progress = DownloadProgress::new(Some(1000));
+    assert!(!progress.advance(1));
+    tokio::time::advance(DOWNLOAD_PROGRESS_LOG_INTERVAL).await;
+    assert!(progress.advance(1));
+    assert_eq!(progress.percentage(), Some(0));
+}
+
+async fn streamed_download_response() -> (
+    reqwest::Response,
+    mpsc::UnboundedSender<Result<&'static str, io::Error>>,
+    JoinHandle<()>,
+) {
+    let (chunk_sender, chunk_receiver) = mpsc::unbounded_channel();
+    let chunks = futures_util::stream::unfold(chunk_receiver, |mut receiver| async move {
+        receiver.recv().await.map(|chunk| (chunk, receiver))
+    });
+    let response_body = Arc::new(Mutex::new(Some(Body::from_stream(chunks))));
+    let app = Router::new().route(
+        "/download",
+        get(move || {
+            let body = response_body.lock().unwrap().take().unwrap();
+            async move { axum::response::Response::new(body) }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let download_url = format!("http://{}/download", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .get(download_url)
+        .send();
+    let response = timeout(Duration::from_secs(5), response)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.content_length(), None);
+    (response, chunk_sender, server)
+}
+
+async fn wait_for_download_size(download_path: &Path, expected_bytes: u64) {
+    let started_at = std::time::Instant::now();
+    loop {
+        if fs::metadata(download_path)
+            .await
+            .is_ok_and(|metadata| metadata.len() == expected_bytes)
+        {
+            tokio::task::yield_now().await;
+            return;
+        }
+        assert!(
+            started_at.elapsed() < Duration::from_secs(5),
+            "download did not write {expected_bytes} bytes"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn saves_a_complete_download_without_a_content_length() {
+    let workspace = tempfile::tempdir().unwrap();
+    let download_path = workspace.path().join("download.zip");
+    let (response, chunk_sender, server) = streamed_download_response().await;
+    chunk_sender.send(Ok("first chunk")).unwrap();
+    chunk_sender.send(Ok("second chunk")).unwrap();
+    drop(chunk_sender);
+
+    timeout(
+        Duration::from_secs(5),
+        Antra::save_download(response, "test-job", "download.zip", &download_path),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        fs::read(&download_path).await.unwrap(),
+        b"first chunksecond chunk"
+    );
+    server.abort();
+}
+
+async fn assert_download_stalls_after_idle(initial_chunk: Option<&'static str>, send_more: bool) {
+    let workspace = tempfile::tempdir().unwrap();
+    let download_path = workspace.path().join("download.zip");
+    let (response, chunk_sender, server) = streamed_download_response().await;
+    let mut downloaded_bytes = 0;
+    if let Some(chunk) = initial_chunk {
+        downloaded_bytes += chunk.len() as u64;
+        chunk_sender.send(Ok(chunk)).unwrap();
+    }
+    let task_download_path = download_path.clone();
+    let download = tokio::spawn(async move {
+        Antra::save_download(response, "test-job", "download.zip", &task_download_path).await
+    });
+    wait_for_download_size(&download_path, downloaded_bytes).await;
+
+    // Socket and file I/O must finish before Tokio advances the paused clock.
+    let clock_guard = tokio::spawn(async {
+        loop {
+            tokio::task::yield_now().await;
+        }
+    });
+    tokio::time::pause();
+    tokio::time::advance(DOWNLOAD_IDLE_TIMEOUT - Duration::from_secs(1)).await;
+    assert!(!download.is_finished());
+    if send_more {
+        chunk_sender.send(Ok("another chunk")).unwrap();
+        downloaded_bytes += "another chunk".len() as u64;
+        wait_for_download_size(&download_path, downloaded_bytes).await;
+        tokio::time::advance(DOWNLOAD_IDLE_TIMEOUT - Duration::from_secs(1)).await;
+        assert!(!download.is_finished());
+    }
+    // Tokio rounds deadlines to milliseconds; cross that boundary before resuming for file cleanup.
+    tokio::time::advance(Duration::from_secs(1) + Duration::from_millis(1)).await;
+    tokio::time::resume();
+    let error = timeout(Duration::from_secs(5), download)
+        .await
+        .expect("idle timeout did not finish the download")
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(error, AntraError::DownloadStalled { downloaded_bytes: bytes } if bytes == downloaded_bytes),
+        "{error:?}"
+    );
+    assert!(!download_path.exists());
+    server.abort();
+    clock_guard.abort();
+}
+
+#[tokio::test]
+async fn times_out_when_the_download_body_never_starts() {
+    assert_download_stalls_after_idle(None, false).await;
+}
+
+#[tokio::test]
+async fn stalled_download_removes_the_partial_file() {
+    assert_download_stalls_after_idle(Some("partial download"), false).await;
+}
+
+#[tokio::test]
+async fn download_idle_timeout_resets_after_each_chunk() {
+    assert_download_stalls_after_idle(Some("partial download"), true).await;
 }
 
 // Real zips, because placement extracts with the real unzip binary.
