@@ -1,32 +1,68 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { resolve } from '$app/paths';
+	import ArtistAlbumCounts from '$lib/components/ArtistAlbumCounts.svelte';
 	import ArtistProfileImage from '$lib/components/ArtistProfileImage.svelte';
 	import * as Card from '$lib/components/ui/card/index.js';
-	import type { Artist } from '$lib/dto/Artist';
+	import type { ArtistSummary } from '$lib/dto/ArtistSummary';
 
-	let { artist }: { artist: Artist } = $props();
+	let { artist, monitoring }: { artist: ArtistSummary; monitoring: Snippet } = $props();
 </script>
 
-<a class="artist-link" href={resolve('/artist/[artist_id]', { artist_id: artist.id })}>
+<div class="artist-card">
 	<Card.Root class="h-full gap-0 py-0 shadow-none">
-		<Card.Content class="p-0">
-			<div class="artist-content">
-				<div class="profile-image" aria-hidden="true">
-					<ArtistProfileImage {artist} />
+		<Card.Content class="flex h-full flex-col p-0">
+			<a class="artist-link" href={resolve('/artist/[artist_id]', { artist_id: artist.id })}>
+				<div class="artist-content">
+					<div class="profile-image" aria-hidden="true">
+						<ArtistProfileImage {artist} />
+					</div>
+					<h2>{artist.name}</h2>
 				</div>
-				<h2>{artist.name}</h2>
+			</a>
+			<div class="card-metadata">
+				<ArtistAlbumCounts {artist} showLabel />
+				<div class="monitor-control">{@render monitoring()}</div>
 			</div>
 		</Card.Content>
 	</Card.Root>
-</a>
+</div>
 
 <style>
+	.artist-card {
+		position: relative;
+		height: 100%;
+		border-radius: var(--radius-xl);
+	}
+
 	.artist-link {
 		display: block;
-		height: 100%;
+		flex: 1;
 		border-radius: var(--radius-xl);
 		color: inherit;
 		text-decoration: none;
+	}
+
+	.artist-link::after {
+		position: absolute;
+		inset: 0;
+		border-radius: inherit;
+		content: '';
+	}
+
+	.card-metadata {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 2.75rem;
+		align-items: center;
+		gap: 0.375rem;
+		margin-top: auto;
+		padding: 0.625rem 1rem;
+		border-top: 1px solid var(--border);
+	}
+
+	.monitor-control {
+		position: relative;
+		z-index: 1;
 	}
 
 	.artist-link:hover h2 {
@@ -35,6 +71,10 @@
 	}
 
 	.artist-link:focus-visible {
+		outline: none;
+	}
+
+	.artist-card:has(.artist-link:focus-visible) {
 		outline: 2px solid var(--ring);
 		outline-offset: 4px;
 	}
@@ -63,6 +103,10 @@
 	}
 
 	@media (max-width: 40rem) {
+		.card-metadata {
+			display: none;
+		}
+
 		.artist-content {
 			gap: 1rem;
 			padding: 1.25rem 0.875rem;

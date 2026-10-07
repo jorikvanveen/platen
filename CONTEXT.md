@@ -37,6 +37,16 @@ finds exactly one Tidal match. A release may be an album, EP, or single. The nam
 "Album" is the entity's name, not a claim that every one is a full-length album.
 _Avoid_: release, record
 
+**Artist Album count**:
+The number of distinct current Catalog Albums credited to an Artist, including
+EPs, singles, and Albums where another Artist is the Primary artist. An Album
+credited to multiple Artists counts once for each credited Artist.
+
+**Artist Downloaded Album count**:
+The subset of an Artist's Catalog Albums that have an Album location, including
+audio discovered during a Music directory scan. Download history alone does not
+make an Album downloaded.
+
 **Discovery duplicate group**:
 Albums in an Artist's discovery results with the same release type and title,
 ignoring title case and extra whitespace. Punctuation and edition suffixes remain

@@ -4,7 +4,8 @@
 	import { goto, invalidate, invalidateAll } from '$app/navigation';
 	import { navigating } from '$app/state';
 	import { resolve } from '$app/paths';
-	import ArtistMonitoringCheckbox from '$lib/components/ArtistMonitoringCheckbox.svelte';
+	import { ArtistMonitoringState } from '$lib/artist-monitoring.svelte';
+	import ArtistMonitoringControl from '$lib/components/ArtistMonitoringControl.svelte';
 	import ArtistProfileImage from '$lib/components/ArtistProfileImage.svelte';
 	import CatalogAlbumCard from '$lib/components/CatalogAlbumCard.svelte';
 	import RemoveArtistDialog from '$lib/components/RemoveArtistDialog.svelte';
@@ -18,6 +19,7 @@
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
+	let monitoring = $derived(new ArtistMonitoringState(data.artist.monitored));
 	let albums = $derived(data.albums);
 	let downloadJobs = $derived(data.downloadJobs);
 	const isDiscovering = $derived(navigating.to?.route.id === '/artist/[artist_id]/add');
@@ -135,9 +137,7 @@
 		</div>
 
 		<div class="page-actions">
-			{#key data.artist.id}
-				<ArtistMonitoringCheckbox artist={data.artist} />
-			{/key}
+			<ArtistMonitoringControl artist={data.artist} state={monitoring} showError={false} />
 			<Button
 				href={resolve('/artist/[artist_id]/add', { artist_id: data.artist.id })}
 				class="h-10 px-4"
@@ -153,6 +153,11 @@
 		</div>
 	</div>
 
+	{#if monitoring.error}
+		<p class="page-error" id={'monitoring-error-' + data.artist.id} role="alert">
+			{monitoring.error}
+		</p>
+	{/if}
 	{#if refreshError}<p class="page-error" role="alert">{refreshError}</p>{/if}
 	{#if downloadStatusError}<p class="page-error" role="status">{downloadStatusError}</p>{/if}
 

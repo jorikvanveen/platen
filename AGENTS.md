@@ -1,4 +1,4 @@
-Refer to CODING_STANDARDS.md
+Read and follow `CODING_STANDARDS.md` before making code changes.
 Put specs, scratch files, and other session artifacts in `./.agents/`.
 Put architecture decision records in `./docs/adr/`.
 

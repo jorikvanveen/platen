@@ -3,15 +3,19 @@ use axum::{
     extract::{Path, State},
 };
 use reqwest::StatusCode;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QuerySelect, QueryTrait, sea_query::Expr};
+use sea_orm::{
+    ColumnTrait, EntityTrait, JoinType, QueryFilter, QuerySelect, QueryTrait, RelationTrait,
+    sea_query::{Expr, ExprTrait},
+};
 use tracing::{error, info};
 
 use crate::{
     app::AppState,
-    entity::{album_artist, artist},
+    entity::{album, album_artist, artist},
 };
 
 pub mod dto {
+    use sea_orm::FromQueryResult;
     use serde::{Deserialize, Serialize};
     use ts_rs::TS;
 
@@ -22,6 +26,19 @@ pub mod dto {
         pub name: String,
         pub profile_image_url: Option<String>,
         pub monitored: bool,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, FromQueryResult, TS)]
+    #[ts(export)]
+    pub struct ArtistSummary {
+        pub id: String,
+        pub name: String,
+        pub profile_image_url: Option<String>,
+        pub monitored: bool,
+        #[ts(type = "number")]
+        pub album_count: i64,
+        #[ts(type = "number")]
+        pub downloaded_album_count: i64,
     }
 
     #[derive(Debug, Serialize, Deserialize, TS)]
@@ -115,6 +132,47 @@ pub async fn delete(
     } else {
         StatusCode::NOT_FOUND
     })
+}
+
+pub async fn summaries(
+    State(AppState { db, .. }): State<AppState>,
+) -> Result<Json<Vec<dto::ArtistSummary>>, StatusCode> {
+    let downloaded_album_id = Expr::case(
+        Expr::col((album::Entity, album::Column::RelativePath)).is_not_null(),
+        Expr::col((album::Entity, album::Column::Id)),
+    )
+    .finally(Expr::value(None::<String>));
+
+    let summaries = artist::Entity::find()
+        .select_only()
+        .columns([
+            artist::Column::Id,
+            artist::Column::Name,
+            artist::Column::ProfileImageUrl,
+            artist::Column::Monitored,
+        ])
+        .column_as(
+            Expr::col((album::Entity, album::Column::Id)).count_distinct(),
+            "album_count",
+        )
+        .column_as(
+            Expr::expr(downloaded_album_id).count_distinct(),
+            "downloaded_album_count",
+        )
+        .join(JoinType::LeftJoin, artist::Relation::AlbumArtist.def())
+        .join(JoinType::LeftJoin, album_artist::Relation::Album.def())
+        .group_by(artist::Column::Id)
+        .group_by(artist::Column::Name)
+        .group_by(artist::Column::ProfileImageUrl)
+        .group_by(artist::Column::Monitored)
+        .into_model::<dto::ArtistSummary>()
+        .all(&db)
+        .await
+        .map_err(|error| {
+            error!(%error, "Could not load Artist summaries");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Json(summaries))
 }
 
 pub async fn list(

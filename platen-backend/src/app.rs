@@ -21,6 +21,7 @@ pub(crate) struct AppState {
 pub(crate) fn router(state: AppState) -> Router {
     Router::new()
         .route("/artists", get(routes::artist::list))
+        .route("/artists/summaries", get(routes::artist::summaries))
         .route(
             "/artists/{id}",
             get(routes::artist::get)

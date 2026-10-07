@@ -18,6 +18,8 @@ use tower::ServiceExt;
 mod album_deletion;
 #[path = "artist_removal.rs"]
 mod artist_removal;
+#[path = "artist_summaries.rs"]
+mod artist_summaries;
 #[path = "discovery.rs"]
 mod discovery;
 #[path = "monitoring.rs"]

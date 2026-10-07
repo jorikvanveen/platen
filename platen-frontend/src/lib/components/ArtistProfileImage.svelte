@@ -2,7 +2,7 @@
 	import * as Avatar from '$lib/components/ui/avatar/index.js';
 	import type { Artist } from '$lib/dto/Artist';
 
-	let { artist }: { artist: Artist } = $props();
+	let { artist, compact = false }: { artist: Artist; compact?: boolean } = $props();
 
 	const artistInitials = $derived(
 		artist.name
@@ -25,7 +25,9 @@
 			decoding="async"
 		/>
 	{/if}
-	<Avatar.Fallback class="text-3xl font-medium tracking-tight text-muted-foreground">
+	<Avatar.Fallback class={compact
+				? 'text-[0.8125rem] font-medium text-muted-foreground'
+				: 'text-3xl font-medium tracking-tight text-muted-foreground'}>
 		{artistInitials}
 	</Avatar.Fallback>
 </Avatar.Root>
