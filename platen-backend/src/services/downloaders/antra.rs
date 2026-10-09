@@ -449,6 +449,28 @@ async fn copy_files_flat(album_directory: &Path, destination: &Path) -> Result<(
 #[derive(Debug, Deserialize)]
 struct JobStatusResponse {
     status: String,
+    error: Option<String>,
+    done: Option<u64>,
+    total: Option<u64>,
+    failed: Option<u64>,
+}
+
+impl JobStatusResponse {
+    fn failure_error(&self, job_id: &str) -> AntraError {
+        let reason = self
+            .error
+            .as_deref()
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or("Antra did not provide an error message");
+        AntraError::JobFailed {
+            job_id: job_id.to_owned(),
+            status: self.status.clone(),
+            reason: reason.to_owned(),
+            done: self.done,
+            total: self.total,
+            failed: self.failed,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -511,8 +533,15 @@ pub enum AntraError {
     #[error("Antra returned a file type that does not match the album type")]
     UnexpectedDownloadType,
 
-    #[error("Antra job failed with status: {0}")]
-    JobFailed(String),
+    #[error("Antra job {job_id} failed with status {status}: {reason}")]
+    JobFailed {
+        job_id: String,
+        status: String,
+        reason: String,
+        done: Option<u64>,
+        total: Option<u64>,
+        failed: Option<u64>,
+    },
 
     #[error("Antra job did not finish within 10 minutes")]
     JobTimedOut,
@@ -548,8 +577,7 @@ impl Downloader for Antra {
             let mut consecutive_status_failures = 0;
             loop {
                 sleep(Duration::from_secs(5)).await;
-                let JobStatusResponse { status: job_status } = match self.job_status(&job_id).await
-                {
+                let job_status = match self.job_status(&job_id).await {
                     Ok(status) => {
                         consecutive_status_failures = 0;
                         status
@@ -569,15 +597,32 @@ impl Downloader for Antra {
                         continue;
                     }
                 };
-                tracing::info!("Job status: {job_status}");
-                if job_status == "complete" {
+                tracing::info!(
+                    job_id,
+                    status = %job_status.status,
+                    done = job_status.done,
+                    total = job_status.total,
+                    failed = job_status.failed,
+                    "Antra job status"
+                );
+                if job_status.status == "complete" {
                     return Ok(());
                 }
                 if matches!(
-                    job_status.to_ascii_lowercase().as_str(),
+                    job_status.status.to_ascii_lowercase().as_str(),
                     "failed" | "error" | "cancelled" | "canceled"
                 ) {
-                    return Err(AntraError::JobFailed(job_status));
+                    let error = job_status.failure_error(&job_id);
+                    tracing::error!(
+                        job_id,
+                        status = %job_status.status,
+                        done = job_status.done,
+                        total = job_status.total,
+                        failed = job_status.failed,
+                        error = %error,
+                        "Antra job failed"
+                    );
+                    return Err(error);
                 }
             }
         })

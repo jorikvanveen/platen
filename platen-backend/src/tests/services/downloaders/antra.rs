@@ -16,6 +16,70 @@ fn album_job_requests_reject_empty_albums() {
 }
 
 #[test]
+fn antra_failure_diagnostics_preserve_the_api_details() {
+    let response: JobStatusResponse = serde_json::from_value(serde_json::json!({
+        "status": "failed",
+        "error": "No audio source was available",
+        "done": 1,
+        "total": 4,
+        "failed": 3
+    }))
+    .unwrap();
+
+    let error = response.failure_error("test-job");
+    let diagnostic = error.to_string();
+    assert!(diagnostic.contains("test-job"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("No audio source was available"),
+        "{diagnostic}"
+    );
+    assert!(
+        matches!(
+            error,
+            AntraError::JobFailed {
+                done: Some(1),
+                total: Some(4),
+                failed: Some(3),
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn antra_failure_without_details_produces_consistent_fallback_diagnostics() {
+    let response: JobStatusResponse =
+        serde_json::from_value(serde_json::json!({ "status": "failed" })).unwrap();
+    let fallback = response.failure_error("test-job");
+    assert!(
+        matches!(
+            &fallback,
+            AntraError::JobFailed { reason, .. } if !reason.trim().is_empty()
+        ),
+        "{fallback:?}"
+    );
+
+    for payload in [
+        serde_json::json!({
+            "status": "failed",
+            "error": null,
+            "done": null,
+            "total": null,
+            "failed": null
+        }),
+        serde_json::json!({ "status": "failed", "error": "" }),
+        serde_json::json!({ "status": "failed", "error": " \n\t" }),
+    ] {
+        let response: JobStatusResponse = serde_json::from_value(payload).unwrap();
+        assert_eq!(
+            response.failure_error("test-job").to_string(),
+            fallback.to_string()
+        );
+    }
+}
+
+#[test]
 fn download_progress_reports_five_percent_increments() {
     let mut progress = DownloadProgress::new(Some(100));
     assert!(!progress.advance(4));
