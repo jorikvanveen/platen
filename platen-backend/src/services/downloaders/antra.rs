@@ -10,7 +10,6 @@ use tokio::{
     time::{Instant, MissedTickBehavior, interval_at, sleep, timeout},
 };
 
-use color_eyre::Report;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -22,6 +21,7 @@ use crate::{
 static BASE_URL: &str = "https://antra.hoshi.cfd/api";
 const REAUTHENTICATION_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const REAUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(30);
+const REAUTHENTICATION_RETRY_DELAY: Duration = Duration::from_secs(60);
 const JOB_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAX_CONSECUTIVE_STATUS_FAILURES: u32 = 3;
 const DOWNLOAD_PROGRESS_PERCENT_INTERVAL: u64 = 5;
@@ -76,6 +76,7 @@ impl DownloadProgress {
 #[derive(Clone)]
 pub struct Antra {
     client: reqwest::Client,
+
     tidal: Tidal,
     username: String,
     password: String,
@@ -91,6 +92,7 @@ impl Antra {
     pub fn new(config: &crate::config::Config, tidal: Tidal) -> Self {
         Self {
             tidal,
+
             client: reqwest::ClientBuilder::new()
                 .cookie_store(true)
                 .build()
@@ -102,7 +104,7 @@ impl Antra {
         }
     }
 
-    pub async fn login(&self) -> color_eyre::Result<()> {
+    pub async fn login(&self) -> Result<(), AntraError> {
         let resp = self
             .client
             .post(format!("{BASE_URL}/auth/login"))
@@ -114,13 +116,34 @@ impl Antra {
             .await?;
 
         if !resp.status().is_success() {
-            tracing::error!("Antra: {}: {}", resp.status(), resp.text().await?);
-            return Err(Report::msg("Failed to log in"));
+            let status = resp.status();
+            tracing::error!("Antra: {}: {}", status, resp.text().await?);
+            return Err(AntraError::AuthenticationFailed { status });
         }
 
         tracing::info!("Successfully logged in to antra");
 
         Ok(())
+    }
+
+    async fn login_with_timeout(&self) -> Result<(), AntraError> {
+        timeout(REAUTHENTICATION_TIMEOUT, self.login())
+            .await
+            .map_err(|_| AntraError::AuthenticationTimedOut)?
+    }
+
+    async fn send_authenticated(
+        &self,
+        request: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, AntraError> {
+        let response = request().send().await?;
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+
+        tracing::warn!("Antra session expired; reauthenticating before retrying the request");
+        self.login_with_timeout().await?;
+        Ok(request().send().await?)
     }
 
     pub async fn reauthenticate_periodically(
@@ -137,12 +160,21 @@ impl Antra {
         loop {
             interval.tick().await;
             let reauthentication = async {
-                let _download_guard = queue.pause_downloads().await;
-                tracing::info!("Reauthenticating with Antra");
-                match timeout(REAUTHENTICATION_TIMEOUT, self.login()).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => tracing::warn!(%error, "Scheduled Antra login failed"),
-                    Err(_) => tracing::warn!("Scheduled Antra login timed out"),
+                loop {
+                    let login_result = {
+                        let _download_guard = queue.pause_downloads().await;
+                        tracing::info!("Reauthenticating with Antra");
+                        self.login_with_timeout().await
+                    };
+                    match login_result {
+                        Ok(()) => break,
+                        Err(error) => tracing::warn!(
+                            %error,
+                            retry_delay_seconds = REAUTHENTICATION_RETRY_DELAY.as_secs(),
+                            "Scheduled Antra login failed; retrying"
+                        ),
+                    }
+                    sleep(REAUTHENTICATION_RETRY_DELAY).await;
                 }
             };
             tokio::pin!(reauthentication);
@@ -173,10 +205,7 @@ impl Antra {
             "Creating Antra job"
         );
         let resp = self
-            .client
-            .post(format!("{BASE_URL}/jobs"))
-            .json(&request)
-            .send()
+            .send_authenticated(|| self.client.post(format!("{BASE_URL}/jobs")).json(&request))
             .await?;
 
         if !resp.status().is_success() {
@@ -195,9 +224,7 @@ impl Antra {
 
     async fn job_status(&self, job_id: &str) -> Result<JobStatusResponse, AntraError> {
         let resp = self
-            .client
-            .get(format!("{BASE_URL}/jobs/{job_id}/status"))
-            .send()
+            .send_authenticated(|| self.client.get(format!("{BASE_URL}/jobs/{job_id}/status")))
             .await?;
 
         if !resp.status().is_success() {
@@ -212,9 +239,10 @@ impl Antra {
 
     async fn job_download(&self, job_id: &str) -> Result<PathBuf, AntraError> {
         let resp = self
-            .client
-            .get(format!("{BASE_URL}/jobs/{job_id}/download"))
-            .send()
+            .send_authenticated(|| {
+                self.client
+                    .get(format!("{BASE_URL}/jobs/{job_id}/download"))
+            })
             .await?;
 
         if !resp.status().is_success() {
@@ -506,6 +534,12 @@ impl CreateJobRequestBody {
 pub enum AntraError {
     #[error("Error sending request: {0}")]
     Reqwest(#[from] reqwest::Error),
+
+    #[error("Failed to log in to Antra: {status}")]
+    AuthenticationFailed { status: reqwest::StatusCode },
+
+    #[error("Antra login did not finish within 30 seconds")]
+    AuthenticationTimedOut,
 
     #[error("The album contains no tracks")]
     EmptyAlbum,
